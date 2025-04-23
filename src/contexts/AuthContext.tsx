@@ -8,6 +8,7 @@ type AuthContextType = {
   login: (token: string, userData: any) => Promise<void>;
   logout: () => Promise<void>;
   loading: boolean;
+  clearStorage: () => Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
@@ -27,6 +28,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       const storedToken = await AsyncStorage.getItem('token');
       const storedUser = await AsyncStorage.getItem('user');
 
+      console.log('Loaded stored token:', storedToken ? `${storedToken.substring(0, 10)}...` : 'null');
+      
       if (storedToken && storedUser) {
         setToken(storedToken);
         setUser(JSON.parse(storedUser));
@@ -41,6 +44,14 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const login = async (newToken: string, userData: any) => {
     try {
+      console.log('Storing token:', newToken ? `${newToken.substring(0, 10)}...` : 'null');
+      console.log('User data:', userData);
+      
+      if (!newToken || newToken.trim() === '') {
+        console.error('Attempting to store empty token');
+        throw new Error('Invalid token received');
+      }
+      
       await AsyncStorage.setItem('token', newToken);
       await AsyncStorage.setItem('user', JSON.stringify(userData));
       setToken(newToken);
@@ -64,6 +75,18 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
       throw error;
     }
   };
+  
+  const clearStorage = async () => {
+    try {
+      await AsyncStorage.clear();
+      console.log('AsyncStorage cleared');
+      setToken(null);
+      setUser(null);
+      setIsAuthenticated(false);
+    } catch (error) {
+      console.error('Error clearing AsyncStorage:', error);
+    }
+  };
 
   return (
     <AuthContext.Provider
@@ -74,6 +97,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         login,
         logout,
         loading,
+        clearStorage,
       }}
     >
       {children}
