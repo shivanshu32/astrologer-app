@@ -1,11 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
-import { AuthStackParamList } from '../../navigation/types';
 import { useAuth } from '../../contexts/AuthContext';
 import { loginWithOTP } from '../../services/api';
 
-type Props = NativeStackScreenProps<AuthStackParamList, 'OTP'>;
+// Updated navigation type to match the actual app structure
+type RootStackParamList = {
+  Login: undefined;
+  OTP: { mobileNumber: string; generatedOtp: string };
+  Main: undefined;
+  VoiceCallSession: undefined;
+  VideoCallSession: undefined;
+  BookingRequestsTab: undefined;
+};
+
+type Props = NativeStackScreenProps<RootStackParamList, 'OTP'>;
 
 export default function OTPScreen({ route, navigation }: Props) {
   const { mobileNumber, generatedOtp } = route.params;
@@ -40,16 +49,23 @@ export default function OTPScreen({ route, navigation }: Props) {
 
     setLoading(true);
     try {
+      console.log('Starting OTP verification process...');
+      
       // Call the backend verify-otp endpoint
       const response = await loginWithOTP(mobileNumber, otp);
       
       console.log('Login API Response:', JSON.stringify(response, null, 2));
       
       if (response && response.success && response.token) {
+        console.log('Received valid API response with token');
+        
         // Validate token format
         if (typeof response.token !== 'string' || !response.token.includes('.')) {
+          console.error('Invalid token format:', response.token);
           throw new Error('Received invalid token format');
         }
+        
+        console.log('Calling login with token and user data...');
         
         // Login with the received token and user data
         await login(response.token, {
@@ -60,7 +76,16 @@ export default function OTPScreen({ route, navigation }: Props) {
         });
         
         console.log('Successfully authenticated!');
+        
+        // Navigate to Main screen after successful authentication
+        console.log('Attempting to navigate to Main screen...');
+        navigation.reset({
+          index: 0,
+          routes: [{ name: 'Main' }],
+        });
+        console.log('Navigation command executed');
       } else {
+        console.warn('Authentication failed:', response?.message || 'Unknown reason');
         Alert.alert('Authentication Failed', response?.message || 'Failed to verify OTP');
       }
     } catch (error) {

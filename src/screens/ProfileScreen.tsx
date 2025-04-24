@@ -3,10 +3,19 @@ import { View, Text, StyleSheet, TouchableOpacity, Alert, ScrollView, ActivityIn
 import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigation } from '@react-navigation/native';
+import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+
+type RootStackParamList = {
+  Login: undefined;
+  OTP: { mobileNumber: string; generatedOtp: string };
+  Main: undefined;
+};
+
+type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 
 const ProfileScreen = () => {
   const { user, logout, loading } = useAuth();
-  const navigation = useNavigation();
+  const navigation = useNavigation<NavigationProp>();
 
   const handleLogout = async () => {
     Alert.alert(
@@ -20,7 +29,11 @@ const ProfileScreen = () => {
             try {
               await logout();
               console.log('Logout successful');
-              // Navigation will be handled by the auth state change in App.tsx
+              // Explicitly navigate to Login screen after logout
+              navigation.reset({
+                index: 0,
+                routes: [{ name: 'Login' }],
+              });
             } catch (error) {
               console.error('Error during logout:', error);
               Alert.alert('Error', 'Failed to logout. Please try again.');

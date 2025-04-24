@@ -14,14 +14,23 @@
     },
     "ios": {
       "supportsTablet": true,
-      "bundleIdentifier": "com.anonymous.jyotishcallastrologer"
+      "bundleIdentifier": "com.anonymous.jyotishcallastrologer",
+      "infoPlist": {
+        "NSCameraUsageDescription": "This app needs camera access to enable video calls",
+        "NSMicrophoneUsageDescription": "This app needs microphone access to enable voice calls"
+      }
     },
     "android": {
       "adaptiveIcon": {
         "foregroundImage": "./assets/adaptive-icon.png",
         "backgroundColor": "#ffffff"
       },
-      "package": "com.anonymous.jyotishcallastrologer"
+      "package": "com.anonymous.jyotishcallastrologer",
+      "permissions": [
+        "android.permission.CAMERA",
+        "android.permission.RECORD_AUDIO",
+        "android.permission.MODIFY_AUDIO_SETTINGS"
+      ]
     },
     "web": {
       "favicon": "./assets/favicon.png"
@@ -31,6 +40,20 @@
         "projectId": "2d5ee70b-cfef-4c4b-97eb-5c79475dc571"
       }
     },
-    "owner": "shivanshu32"
+    "owner": "shivanshu32",
+    "plugins": [
+      "./expo-plugins",
+      [
+        "expo-build-properties",
+        {
+          "ios": {
+            "useFrameworks": "static"
+          },
+          "android": {
+            "minSdkVersion": 24
+          }
+        }
+      ]
+    ]
   }
 }

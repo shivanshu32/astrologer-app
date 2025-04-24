@@ -52,11 +52,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         throw new Error('Invalid token received');
       }
       
+      console.log('Setting async storage with token and user data...');
       await AsyncStorage.setItem('token', newToken);
       await AsyncStorage.setItem('user', JSON.stringify(userData));
+      
+      console.log('Setting state variables...');
       setToken(newToken);
       setUser(userData);
       setIsAuthenticated(true);
+      console.log('Authentication state updated, isAuthenticated =', true);
     } catch (error) {
       console.error('Error storing auth data:', error);
       throw error;
@@ -78,8 +82,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
   
   const clearStorage = async () => {
     try {
-      await AsyncStorage.clear();
-      console.log('AsyncStorage cleared');
+      await AsyncStorage.removeItem('token');
+      await AsyncStorage.removeItem('user');
+      
+      console.log('AsyncStorage items removed');
       setToken(null);
       setUser(null);
       setIsAuthenticated(false);
