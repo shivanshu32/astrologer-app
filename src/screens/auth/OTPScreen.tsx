@@ -2,7 +2,8 @@ import React, { useState, useEffect } from 'react';
 import { View, Text, TextInput, TouchableOpacity, StyleSheet, Alert, ActivityIndicator } from 'react-native';
 import { NativeStackScreenProps } from '@react-navigation/native-stack';
 import { useAuth } from '../../contexts/AuthContext';
-import { loginWithOTP } from '../../services/api';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import api, { loginWithOTP } from '../../services/api';
 
 // Updated navigation type to match the actual app structure
 type RootStackParamList = {
@@ -16,42 +17,56 @@ type RootStackParamList = {
 
 type Props = NativeStackScreenProps<RootStackParamList, 'OTP'>;
 
+// Function to decode JWT token
+const decodeJwt = (token: string): any => {
+  try {
+    const base64Url = token.split('.')[1];
+    const base64 = base64Url.replace(/-/g, '+').replace(/_/g, '/');
+    const jsonPayload = decodeURIComponent(
+      atob(base64)
+        .split('')
+        .map(c => '%' + ('00' + c.charCodeAt(0).toString(16)).slice(-2))
+        .join('')
+    );
+    return JSON.parse(jsonPayload);
+  } catch (error) {
+    console.error('Error decoding token:', error);
+    return null;
+  }
+};
+
 export default function OTPScreen({ route, navigation }: Props) {
   const { mobileNumber, generatedOtp } = route.params;
-  const { login, clearStorage } = useAuth();
   const [otp, setOtp] = useState('');
   const [loading, setLoading] = useState(false);
+  const { login } = useAuth();
 
   useEffect(() => {
-    // Clear any existing tokens on component mount
-    const clearExistingAuth = async () => {
-      try {
-        await clearStorage();
-      } catch (error) {
-        console.error('Error clearing storage:', error);
-      }
-    };
-    
     clearExistingAuth();
-  }, [clearStorage]);
+  }, []);
+
+  // Clear any existing auth data to avoid conflicts
+  const clearExistingAuth = async () => {
+    try {
+      await AsyncStorage.removeItem('token');
+      await AsyncStorage.removeItem('user');
+      await AsyncStorage.removeItem('astrologerProfile');
+      console.log('Cleared existing auth data');
+    } catch (error) {
+      console.error('Error clearing auth data:', error);
+    }
+  };
 
   const handleSubmit = async () => {
-    if (!otp || otp.length !== 4) {
-      Alert.alert('Error', 'Please enter a valid 4-digit OTP');
-      return;
-    }
-
-    // For development, verify OTP locally first
-    if (otp !== generatedOtp) {
-      Alert.alert('Error', 'Invalid OTP. Please try again.');
+    if (!otp) {
+      Alert.alert('Error', 'Please enter OTP');
       return;
     }
 
     setLoading(true);
+
     try {
-      console.log('Starting OTP verification process...');
-      
-      // Call the backend verify-otp endpoint
+      // Send OTP verification request
       const response = await loginWithOTP(mobileNumber, otp);
       
       console.log('Login API Response:', JSON.stringify(response, null, 2));
@@ -65,15 +80,94 @@ export default function OTPScreen({ route, navigation }: Props) {
           throw new Error('Received invalid token format');
         }
         
+        // Check if token has the correct userType
+        const decodedToken = decodeJwt(response.token);
+        console.log('Decoded token payload:', decodedToken);
+        
+        // Verify token has correct userType for astrologer app
+        if (!decodedToken.userType || decodedToken.userType !== 'astrologer') {
+          console.warn('⚠️ Warning: JWT token does not have userType "astrologer"');
+          console.log('This may cause socket connection issues - will set correct user data');
+        }
+        
         console.log('Calling login with token and user data...');
         
-        // Login with the received token and user data
-        await login(response.token, {
+        // Add additional user data for socket identification
+        // Store in AsyncStorage first to make it available to socket service
+        await AsyncStorage.setItem('userType', 'astrologer');
+        await AsyncStorage.setItem('authToken', response.token); // Alternative token key
+        
+        // Store user data for socket service
+        interface UserData {
+          id: string;
+          name: string;
+          mobileNumber: string;
+          email?: string;
+          role: string;
+          userType: string;
+          type: string;
+          astrologerId?: string;
+        }
+        
+        const userData: UserData = {
           id: response.user.id || response.user._id,
           name: response.user.name,
           mobileNumber: response.user.mobileNumber,
-          role: 'astrologer', // Ensure role is set to astrologer
-        });
+          email: response.user.email,
+          role: 'astrologer',
+          userType: 'astrologer', // Add userType property explicitly
+          type: 'astrologer', // Add legacy type property
+        };
+        
+        // Store for socket service to use
+        await AsyncStorage.setItem('userData', JSON.stringify(userData));
+        
+        // Now fetch the astrologer profile to get the astrologer ID
+        console.log('Fetching astrologer profile...');
+        try {
+          // Set up api with the token
+          api.defaults.headers.common['Authorization'] = `Bearer ${response.token}`;
+          
+          // Use the correct profile endpoint which is '/astrologers/profile' not '/astrologers/me'
+          const profileResult = await api.get('/astrologers/profile');
+          
+          console.log('Astrologer profile response:', JSON.stringify(profileResult.data, null, 2));
+          
+          if (profileResult.data) {
+            // Store the full astrologer profile for future use
+            await AsyncStorage.setItem('astrologerProfile', JSON.stringify(profileResult.data));
+            console.log('Stored astrologer profile with ID:', profileResult.data._id);
+            
+            // Add the astrologer ID to the user data
+            userData.astrologerId = profileResult.data._id;
+            await AsyncStorage.setItem('userData', JSON.stringify(userData));
+            
+            // Also store just the ID separately for easier access
+            await AsyncStorage.setItem('astrologerId', profileResult.data._id);
+          } else {
+            console.warn('Could not fetch astrologer profile - unexpected response format');
+          }
+        } catch (profileError) {
+          console.error('Error fetching astrologer profile:', profileError);
+          console.log('Will try another approach to get astrologer ID...');
+          
+          // Try to get the astrologer ID through the booking requests endpoint as a fallback
+          try {
+            const bookingResult = await api.get('/booking-requests/astrologer');
+            console.log('Booking requests response:', JSON.stringify(bookingResult.data, null, 2));
+            
+            // The booking endpoint includes the astrologer profile info in the error message
+            if (bookingResult.data && bookingResult.data.message && 
+                bookingResult.data.message.includes('astrologer profile')) {
+              console.log('Trying to extract astrologer ID from booking requests response');
+            }
+          } catch (bookingError) {
+            console.error('Error fetching booking requests:', bookingError);
+          }
+        }
+        
+        // Login with the received token and user data
+        await login(response.token, userData);
         
         console.log('Successfully authenticated!');
         

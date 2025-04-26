@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { 
   View, 
   Text, 
@@ -7,13 +7,16 @@ import {
   StyleSheet, 
   RefreshControl,
   Alert,
-  ActivityIndicator
+  ActivityIndicator,
+  Animated,
+  Platform
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { BookingRequest, bookingRequestService } from '../services/bookingRequestService';
 import { formatDate } from '../utils/dateUtils';
+import { useBookingNotification } from '../contexts/BookingNotificationContext';
 
 type BookingRequestsScreenProps = NativeStackNavigationProp<any>;
 
@@ -23,11 +26,116 @@ const BookingRequestsScreen = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [newRequestIndicator, setNewRequestIndicator] = useState(false);
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  const lastRequestCountRef = useRef<number>(0);
+  const isMounted = useRef(false);
+  const isRefreshingRef = useRef(false);
+  const lastHandledUpdateRef = useRef<Date | null>(null);
+  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+  const lastRefreshTimeRef = useRef<number>(0);
+  
+  // Use notification context for socket status and refreshing
+  const { socketConnected, refreshBookingRequests: contextRefresh, lastUpdated } = useBookingNotification();
+
+  // Function to handle refresh with debouncing
+  const debouncedRefresh = useCallback(() => {
+    const now = Date.now();
+    const timeSinceLastRefresh = now - lastRefreshTimeRef.current;
+    const MIN_REFRESH_INTERVAL = 3000; // Minimum 3 seconds between refreshes
+    
+    // If we've refreshed recently, debounce the refresh
+    if (timeSinceLastRefresh < MIN_REFRESH_INTERVAL) {
+      console.log(`Debouncing refresh (${timeSinceLastRefresh}ms since last refresh)`);
+      
+      // Clear any existing timeout
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+      
+      // Set a new timeout
+      refreshTimeoutRef.current = setTimeout(() => {
+        console.log('Executing debounced refresh');
+        loadBookingRequests();
+      }, MIN_REFRESH_INTERVAL - timeSinceLastRefresh);
+      
+      return;
+    }
+    
+    // Otherwise, refresh immediately
+    loadBookingRequests();
+  }, []);
+
+  // Animation for new request indicator
+  const pulseAnimation = () => {
+    Animated.sequence([
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 500,
+        useNativeDriver: true
+      }),
+      Animated.timing(fadeAnim, {
+        toValue: 0.3,
+        duration: 500,
+        useNativeDriver: true
+      })
+    ]).start(() => {
+      if (newRequestIndicator) {
+        pulseAnimation();
+      }
+    });
+  };
+
+  // Start animation when indicator changes
+  useEffect(() => {
+    if (newRequestIndicator) {
+      pulseAnimation();
+    }
+  }, [newRequestIndicator]);
 
   const loadBookingRequests = useCallback(async () => {
+    // Don't refresh if already refreshing
+    if (isRefreshingRef.current) {
+      console.log('Already refreshing, skipping duplicate call');
+      return;
+    }
+    
     try {
-      const requests = await bookingRequestService.getMyBookingRequests();
-      setBookingRequests(requests);
+      lastRefreshTimeRef.current = Date.now();
+      isRefreshingRef.current = true;
+      
+      console.log('BookingRequestsScreen: Loading booking requests...');
+      setLoading(true);
+      
+      // Use context refresh function to ensure consistency
+      const requests = await contextRefresh();
+      
+      // Get only pending requests
+      const pendingRequests = requests.filter(req => req.status === 'pending');
+      
+      console.log(`BookingRequestsScreen: Loaded ${pendingRequests.length} pending requests`);
+      
+      // Check if we have new requests
+      if (isMounted.current && lastRequestCountRef.current < pendingRequests.length) {
+        console.log('New requests detected!');
+        setNewRequestIndicator(true);
+        
+        // Auto-dismiss indicator after 5 seconds
+        setTimeout(() => {
+          setNewRequestIndicator(false);
+        }, 5000);
+      }
+      
+      // Store the current count
+      lastRequestCountRef.current = pendingRequests.length;
+      
+      setBookingRequests(pendingRequests);
+      
+      // Store the current update timestamp
+      if (lastUpdated) {
+        lastHandledUpdateRef.current = new Date(lastUpdated.getTime());
+        console.log(`Updated lastHandledUpdateRef to: ${lastHandledUpdateRef.current.toISOString()}`);
+      }
     } catch (error) {
       console.error('Error loading booking requests:', error);
       Alert.alert(
@@ -37,12 +145,78 @@ const BookingRequestsScreen = () => {
     } finally {
       setLoading(false);
       setRefreshing(false);
+      
+      // Clear the refreshing flag
+      setTimeout(() => {
+        console.log('Clearing isRefreshingRef flag');
+        isRefreshingRef.current = false;
+      }, 1000);
     }
+  }, [contextRefresh]);
+
+  // When the screen comes into focus
+  useFocusEffect(
+    useCallback(() => {
+      debouncedRefresh();
+      
+      return () => {
+        // Clear any pending timeouts when screen loses focus
+        if (refreshTimeoutRef.current) {
+          clearTimeout(refreshTimeoutRef.current);
+        }
+      };
+    }, [debouncedRefresh])
+  );
+
+  // When component mounts
+  useEffect(() => {
+    isMounted.current = true;
+    return () => {
+      isMounted.current = false;
+      // Clear any pending refresh timeouts
+      if (refreshTimeoutRef.current) {
+        clearTimeout(refreshTimeoutRef.current);
+      }
+    };
   }, []);
+
+  // Watch for lastUpdated changes from context
+  useEffect(() => {
+    // Skip if there's no lastUpdated value
+    if (!lastUpdated) {
+      return;
+    }
+    
+    // Skip if component is not mounted
+    if (!isMounted.current) {
+      console.log('Component not mounted, skipping refresh');
+      return;
+    }
+    
+    // Skip if already in a refresh cycle
+    if (isRefreshingRef.current) {
+      console.log('Already refreshing, skipping additional refresh trigger');
+      return;
+    }
+    
+    // Compare with last handled timestamp
+    const isNewUpdate = !lastHandledUpdateRef.current || 
+                         lastUpdated.getTime() > lastHandledUpdateRef.current.getTime();
+    
+    if (isNewUpdate) {
+      console.log(`BookingRequestsScreen: Detected new update at ${lastUpdated.toISOString()}`);
+      console.log(`Last handled: ${lastHandledUpdateRef.current ? lastHandledUpdateRef.current.toISOString() : 'none'}`);
+      console.log('Triggering refresh...');
+      debouncedRefresh(); // Use debounced refresh here instead
+    } else {
+      console.log('Update already handled, skipping refresh');
+    }
+  }, [lastUpdated, debouncedRefresh]);
 
   const handleRefresh = () => {
     setRefreshing(true);
-    loadBookingRequests();
+    setNewRequestIndicator(false);
+    debouncedRefresh(); // Use debounced refresh here
   };
 
   const handleAccept = async (id: string) => {
@@ -103,14 +277,6 @@ const BookingRequestsScreen = () => {
       ]
     );
   };
-
-  useEffect(() => {
-    const unsubscribe = navigation.addListener('focus', () => {
-      loadBookingRequests();
-    });
-
-    return unsubscribe;
-  }, [navigation, loadBookingRequests]);
 
   const getConsultationTypeIcon = (type: string) => {
     switch (type) {
@@ -228,20 +394,47 @@ const BookingRequestsScreen = () => {
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Booking Requests</Text>
+        
+        {/* Socket connection indicator */}
+        <View style={styles.connectionContainer}>
+          <View style={[
+            styles.connectionIndicator, 
+            socketConnected ? styles.connected : styles.disconnected
+          ]} />
+          <Text style={styles.connectionText}>
+            {socketConnected ? 'Connected' : 'Disconnected'}
+          </Text>
+        </View>
       </View>
+      
+      {/* New request indicator */}
+      {newRequestIndicator && (
+        <Animated.View 
+          style={[
+            styles.newRequestsIndicator,
+            { opacity: fadeAnim }
+          ]}
+        >
+          <Ionicons name="notifications" size={20} color="#fff" />
+          <Text style={styles.newRequestsText}>New booking requests!</Text>
+        </Animated.View>
+      )}
       
       {loading ? (
         <View style={styles.loadingContainer}>
           <ActivityIndicator size="large" color="#6366f1" />
-          <Text style={styles.loadingText}>Loading requests...</Text>
+          <Text style={styles.loadingText}>Loading booking requests...</Text>
         </View>
       ) : bookingRequests.length === 0 ? (
         <View style={styles.emptyContainer}>
           <Ionicons name="calendar-outline" size={64} color="#d1d5db" />
-          <Text style={styles.emptyText}>No booking requests yet</Text>
-          <Text style={styles.emptySubtext}>
-            When users request consultations, they will appear here
-          </Text>
+          <Text style={styles.emptyText}>No pending booking requests</Text>
+          <TouchableOpacity 
+            style={styles.refreshButton}
+            onPress={handleRefresh}
+          >
+            <Text style={styles.refreshButtonText}>Refresh</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -250,7 +443,11 @@ const BookingRequestsScreen = () => {
           renderItem={renderBookingItem}
           contentContainerStyle={styles.listContainer}
           refreshControl={
-            <RefreshControl refreshing={refreshing} onRefresh={handleRefresh} />
+            <RefreshControl 
+              refreshing={refreshing} 
+              onRefresh={handleRefresh} 
+              colors={['#6366f1']}
+            />
           }
         />
       )}
@@ -264,16 +461,99 @@ const styles = StyleSheet.create({
     backgroundColor: '#f9fafb',
   },
   header: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
     paddingHorizontal: 16,
-    paddingVertical: 16,
-    backgroundColor: '#fff',
+    paddingVertical: 12,
     borderBottomWidth: 1,
     borderBottomColor: '#e5e7eb',
+    backgroundColor: '#fff'
   },
   headerTitle: {
-    fontSize: 20,
+    fontSize: 18,
     fontWeight: 'bold',
-    color: '#111827',
+    color: '#111827'
+  },
+  connectionContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  connectionIndicator: {
+    width: 10,
+    height: 10,
+    borderRadius: 5,
+    marginRight: 5
+  },
+  connected: {
+    backgroundColor: '#10b981' // Green
+  },
+  disconnected: {
+    backgroundColor: '#ef4444' // Red
+  },
+  connectionText: {
+    fontSize: 12,
+    color: '#6b7280'
+  },
+  newRequestsIndicator: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#6366f1',
+    paddingVertical: 8,
+    paddingHorizontal: 12,
+    marginHorizontal: 16,
+    marginTop: 8,
+    borderRadius: 8,
+    justifyContent: 'center'
+  },
+  newRequestsText: {
+    color: '#fff',
+    fontSize: 14,
+    fontWeight: 'bold',
+    marginLeft: 6
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+  },
+  loadingText: {
+    marginTop: 16,
+    fontSize: 16,
+    color: '#6b7280',
+  },
+  emptyContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+    backgroundColor: '#fff',
+    padding: 24,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#4b5563',
+    marginTop: 16,
+  },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#6b7280',
+    textAlign: 'center',
+    marginTop: 8,
+  },
+  connectionWarning: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    backgroundColor: '#fef3c7',
+    padding: 12,
+    borderRadius: 8,
+    marginTop: 16,
+  },
+  connectionWarningText: {
+    fontSize: 14,
+    color: '#92400e',
+    marginLeft: 8,
   },
   listContainer: {
     padding: 16,
@@ -282,12 +562,12 @@ const styles = StyleSheet.create({
     backgroundColor: '#fff',
     borderRadius: 12,
     marginBottom: 16,
+    overflow: 'hidden',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
-    shadowRadius: 3,
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
     elevation: 2,
-    overflow: 'hidden',
   },
   bookingHeader: {
     flexDirection: 'row',
@@ -382,33 +662,16 @@ const styles = StyleSheet.create({
   actionButtonText: {
     fontWeight: 'bold',
   },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  loadingText: {
+  refreshButton: {
+    padding: 12,
+    backgroundColor: '#6366f1',
+    borderRadius: 8,
     marginTop: 16,
+  },
+  refreshButtonText: {
     fontSize: 16,
-    color: '#6b7280',
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 24,
-  },
-  emptyText: {
-    fontSize: 18,
     fontWeight: 'bold',
-    color: '#6b7280',
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: '#9ca3af',
-    textAlign: 'center',
-    marginTop: 8,
+    color: '#fff',
   },
 });
 

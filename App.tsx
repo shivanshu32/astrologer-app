@@ -8,6 +8,8 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import { View as RNView, Text as RNText, ActivityIndicator as RNActivityIndicator } from 'react-native';
 import { styled } from 'nativewind';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
+import { BookingNotificationProvider } from './src/contexts/BookingNotificationContext';
+import BookingRequestPopup from './src/components/BookingRequestPopup';
 
 // Styled components
 const View = styled(RNView);
@@ -23,7 +25,8 @@ let LoginScreen: React.ComponentType<any>,
     BookingsScreen: React.ComponentType<any>, 
     CallScreen: React.ComponentType<any>, 
     VideoCallScreen: React.ComponentType<any>,
-    BookingRequestsScreen: React.ComponentType<any>;
+    BookingRequestsScreen: React.ComponentType<any>,
+    DebugScreen: React.ComponentType<any>;
 
 try {
   // Auth screens - correct path with auth subdirectory
@@ -35,6 +38,7 @@ try {
   ProfileScreen = require('./src/screens/ProfileScreen').default;
   BookingsScreen = require('./src/screens/BookingsScreen').default;
   BookingRequestsScreen = require('./src/screens/BookingRequestsScreen').default;
+  DebugScreen = require('./src/screens/DebugScreen').default;
   
   // Additional screens
   VideoCallScreen = require('./src/screens/VideoCallScreen').default;
@@ -64,6 +68,7 @@ try {
   CallScreen = () => <PlaceholderScreen screenName="Call Screen" />;
   VideoCallScreen = () => <PlaceholderScreen screenName="Video Call Screen" />;
   BookingRequestsScreen = () => <PlaceholderScreen screenName="Booking Requests Screen" />;
+  DebugScreen = () => <PlaceholderScreen screenName="Debug Screen" />;
 }
 
 // Stack navigation
@@ -86,6 +91,8 @@ function TabNavigator() {
             iconName = focused ? 'calendar' : 'calendar-outline';
           } else if (route.name === 'Profile') {
             iconName = focused ? 'person' : 'person-outline';
+          } else if (route.name === 'Debug') {
+            iconName = focused ? 'bug' : 'bug-outline';
           }
 
           return <Ionicons name={iconName} size={size} color={color} />;
@@ -99,6 +106,7 @@ function TabNavigator() {
       <Tab.Screen name="Chat" component={ChatScreen} />
       <Tab.Screen name="Bookings" component={BookingsScreen} />
       <Tab.Screen name="Profile" component={ProfileScreen} />
+      <Tab.Screen name="Debug" component={DebugScreen} />
     </Tab.Navigator>
   );
 }
@@ -137,6 +145,9 @@ function AppContent() {
         <Stack.Screen name="VideoCallSession" component={VideoCallScreen} />
         <Stack.Screen name="BookingRequestsTab" component={BookingRequestsScreen} />
       </Stack.Navigator>
+      
+      {/* Render the booking request popup when authenticated */}
+      {isAuthenticated && <BookingRequestPopup />}
     </NavigationContainer>
   );
 }
@@ -144,8 +155,10 @@ function AppContent() {
 // Root App Component (with providers)
 export default function App() {
   return (
-    <AuthProvider>
-      <AppContent />
-    </AuthProvider>
+    <BookingNotificationProvider>
+      <AuthProvider>
+        <AppContent />
+      </AuthProvider>
+    </BookingNotificationProvider>
   );
 }

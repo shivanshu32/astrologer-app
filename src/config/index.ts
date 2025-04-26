@@ -1,7 +1,8 @@
 // App configuration
 const config = {
   // API settings
-  API_URL: 'https://api.yourserver.com', // Replace with your actual API URL
+  API_URL: 'http://localhost:3002/api', // Local development server
+  LOCAL_NETWORK_API_URL: 'http://192.168.29.231:3002/api', // Local network IP
   
   // Agora settings
   AGORA: {
@@ -27,4 +28,5 @@ const config = {
   },
 };
 
+export const { API_URL, LOCAL_NETWORK_API_URL, AGORA, APP_NAME, VERSION, FEATURES, AVAILABILITY } = config;
 export default config; 
