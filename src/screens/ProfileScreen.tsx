@@ -4,6 +4,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { useAuth } from '../contexts/AuthContext';
 import { useNavigation } from '@react-navigation/native';
 import type { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import OnlineStatusToggle from '../components/OnlineStatusToggle';
 
 type RootStackParamList = {
   Login: undefined;
@@ -64,6 +65,17 @@ const ProfileScreen = () => {
         </View>
         <Text style={styles.name}>{user?.name || 'Astrologer'}</Text>
         <Text style={styles.mobileNumber}>{user?.mobileNumber || ''}</Text>
+      </View>
+
+      {/* Online Status Section */}
+      <View style={styles.section}>
+        <Text style={styles.sectionTitle}>Online Status</Text>
+        <View style={styles.onlineStatusContainer}>
+          <OnlineStatusToggle variant="button" />
+          <Text style={styles.onlineStatusDescription}>
+            Toggle your online status to let users know when you're available for consultations
+          </Text>
+        </View>
       </View>
 
       <View style={styles.section}>
@@ -169,6 +181,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#6B7280',
   },
+  onlineStatusContainer: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    paddingHorizontal: 16,
+  },
+  onlineStatusDescription: {
+    marginTop: 12,
+    textAlign: 'center',
+    color: '#6B7280',
+    fontSize: 14,
+  },
   section: {
     backgroundColor: '#FFFFFF',
     marginTop: 16,
@@ -203,18 +226,19 @@ const styles = StyleSheet.create({
     backgroundColor: '#EF4444',
     marginHorizontal: 16,
     marginTop: 24,
-    padding: 12,
+    marginBottom: 16,
+    paddingVertical: 12,
     borderRadius: 8,
   },
   logoutButtonText: {
+    color: '#FFFFFF',
     fontSize: 16,
     fontWeight: '600',
-    color: '#FFFFFF',
     marginLeft: 8,
   },
   versionContainer: {
     alignItems: 'center',
-    padding: 24,
+    marginVertical: 24,
   },
   versionText: {
     fontSize: 14,

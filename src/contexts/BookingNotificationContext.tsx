@@ -11,8 +11,8 @@ type BookingNotificationContextType = {
   activeBookingRequest: BookingRequest | null;
   recentBookingRequests: BookingRequest[];
   isLoading: boolean;
-  acceptBooking: (bookingId: string) => Promise<void>;
-  rejectBooking: (bookingId: string, reason?: string) => Promise<void>;
+  acceptBooking: (bookingId: string) => Promise<BookingRequest>;
+  rejectBooking: (bookingId: string, reason?: string) => Promise<BookingRequest>;
   dismissNotification: () => void;
   refreshBookingRequests: () => Promise<BookingRequest[]>;
   socketConnected: boolean;
@@ -186,50 +186,23 @@ export const BookingNotificationProvider: React.FC<{ children: React.ReactNode }
     }
   };
 
-  // Fetch pending booking requests (only called on initial load and manual refresh)
+  // Fetch booking requests (called on initial load and manual refresh)
   const refreshBookingRequests = async () => {
     try {
-      if (isDev) console.log('Fetching pending booking requests...');
+      if (isDev) console.log('Fetching booking requests...');
       setIsLoading(true);
       
+      // Get all booking requests instead of just pending ones
       const requests = await bookingRequestService.getMyBookingRequests();
       
       if (isDev) console.log(`Received ${requests.length} booking requests from API`);
       
-      // Filter only pending requests and sort by newest first
-      const pendingRequests = requests
-        .filter(req => req.status === 'pending')
-        .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
+      // Update the last updated timestamp
+      const newUpdateTime = new Date();
+      if (isDev) console.log(`Setting lastUpdated to: ${newUpdateTime.toISOString()}`);
+      setLastUpdated(newUpdateTime);
       
-      if (isDev) console.log(`Found ${pendingRequests.length} pending booking requests`);
-      
-      // Check if the list has actually changed before updating lastUpdated
-      const hasChanged = checkIfRequestsChanged(pendingRequests, recentBookingRequests);
-      
-      if (isDev) {
-        if (hasChanged) {
-          console.log('Booking requests list has changed, updating state');
-        } else {
-          console.log('No changes detected in booking requests list');
-        }
-      }
-      
-      // Update the recent requests list (only if changed, to avoid unnecessary re-renders)
-      if (hasChanged || recentBookingRequests.length === 0) {
-        setRecentBookingRequests(pendingRequests);
-      }
-      
-      // Only update lastUpdated if there was an actual change or it's the first load
-      // This is critical to avoid triggering useless refresh cycles
-      if (hasChanged || lastUpdated === null) {
-        const newUpdateTime = new Date();
-        if (isDev) console.log(`Setting lastUpdated to: ${newUpdateTime.toISOString()}`);
-        setLastUpdated(newUpdateTime);
-      } else if (isDev) {
-        console.log('Skipping lastUpdated update since nothing changed');
-      }
-      
-      return pendingRequests;
+      return requests;
     } catch (error) {
       console.error('Error fetching booking requests:', error);
       throw error;
@@ -237,158 +210,82 @@ export const BookingNotificationProvider: React.FC<{ children: React.ReactNode }
       setIsLoading(false);
     }
   };
-  
-  // Helper function to check if the booking requests list has changed
-  const checkIfRequestsChanged = (newRequests: BookingRequest[], oldRequests: BookingRequest[]): boolean => {
-    // Quick length check first
-    if (newRequests.length !== oldRequests.length) {
-      return true;
-    }
-    
-    // Compare IDs (assumes lists are sorted the same way)
-    const newIds = new Set(newRequests.map(req => req._id));
-    const oldIds = new Set(oldRequests.map(req => req._id));
-    
-    // Check if all new IDs are in old set and vice versa
-    if (newIds.size !== oldIds.size) {
-      return true;
-    }
-    
-    for (const id of newIds) {
-      if (!oldIds.has(id)) {
-        return true;
-      }
-    }
-    
-    return false;
-  };
 
   // Fetch full booking details when we receive a notification
   const fetchBookingDetails = async (bookingId: string) => {
     try {
-      if (isDev) console.log(`Fetching details for booking request: ${bookingId}`);
+      // First try to find it in recently fetched requests
+      let existingRequest = recentBookingRequests.find(req => req._id === bookingId);
       
-      // Add retry logic
-      let booking = null;
-      let attempts = 0;
-      const maxAttempts = 3;
-      
-      while (!booking && attempts < maxAttempts) {
-        attempts++;
+      // If not found locally, fetch from API
+      if (!existingRequest) {
         try {
-          booking = await bookingRequestService.getBookingRequestById(bookingId);
-          if (isDev) console.log(`Attempt ${attempts}: ${booking ? 'Success' : 'Failed'}`);
+          // Get all booking requests since the specific booking isn't found locally
+          const updatedRequests = await bookingRequestService.getMyBookingRequests();
           
-          if (!booking && attempts < maxAttempts) {
-            // Wait before retrying
-            await new Promise(resolve => setTimeout(resolve, 1000));
+          // Find the specific request in the updated list
+          existingRequest = updatedRequests.find(req => req._id === bookingId);
+          
+          if (existingRequest) {
+            // Update the recent requests list with all requests
+            setRecentBookingRequests(updatedRequests);
           }
-        } catch (retryError) {
-          console.error(`Error on attempt ${attempts}:`, retryError);
-          if (attempts < maxAttempts) {
-            // Wait longer before retrying
-            await new Promise(resolve => setTimeout(resolve, 1500));
-          }
+        } catch (error) {
+          console.error('Error fetching booking by ID:', error);
         }
       }
       
-      if (isDev) console.log('Booking details received:', booking ? 'yes' : 'no');
-      
-      if (!booking) {
-        console.error(`No booking found with ID: ${bookingId} after ${attempts} attempts`);
+      if (existingRequest) {
+        setActiveBookingRequest(existingRequest);
         
-        // Check if the socket is still connected
-        const socketStatus = isSocketConnected();
-        console.log(`Socket connection status during fetch failure: ${socketStatus ? 'connected' : 'disconnected'}`);
-        
-        // Create a placeholder if needed for testing
-        if (isDev && bookingId.startsWith('test-')) {
-          console.log('Creating test booking placeholder for UI testing');
-          booking = {
-            _id: bookingId,
-            userId: { 
-              _id: 'test-user',
-              name: 'Test User',
-              mobileNumber: '1234567890'
-            },
-            astrologerId: 'test-astrologer',
-            status: 'pending' as 'pending',
-            consultationType: 'chat' as 'chat',
-            amount: 500,
-            notes: 'This is a test booking request',
-            createdAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          } as BookingRequest;
-        } else {
-          return;
-        }
-      }
-      
-      // Only show popup for pending requests
-      if (booking.status === 'pending') {
-        // Set as active booking request for popup
-        setActiveBookingRequest(booking);
-        
-        // Also add to recent requests list if not already there
-        setRecentBookingRequests(prev => {
-          // Check if already in the list
-          if (prev.some(req => req._id === booking._id)) {
-            if (isDev) console.log('Booking already in recent requests list');
-            return prev;
-          }
-          // Add to the beginning of the list
-          if (isDev) console.log('Adding booking to recent requests list');
-          return [booking, ...prev];
-        });
-        
-        if (isDev) console.log('Booking details retrieved and notification set');
+        // Filter only pending requests to show the count
+        const pendingRequests = recentBookingRequests.filter(req => req.status === 'pending');
+        if (isDev) console.log(`Updated booking notification, now showing: ${pendingRequests.length} pending requests`);
       } else {
-        if (isDev) console.log(`Booking status is ${booking.status}, not showing popup`);
+        console.error(`Could not find booking request with ID: ${bookingId}`);
       }
     } catch (error) {
       console.error('Error fetching booking details:', error);
     }
   };
 
-  // Accept booking request
+  // Accept a booking request
   const acceptBooking = async (bookingId: string) => {
     try {
       setIsLoading(true);
-      await bookingRequestService.acceptBookingRequest(bookingId);
+      const updatedBooking = await bookingRequestService.acceptBookingRequest(bookingId);
       
-      // Dismiss popup if it's the active booking
-      if (activeBookingRequest && activeBookingRequest._id === bookingId) {
-        setActiveBookingRequest(null);
-      }
+      // Refresh the list
+      await refreshBookingRequests();
       
-      // Remove from recent requests
-      setRecentBookingRequests(prev => 
-        prev.filter(req => req._id !== bookingId)
-      );
+      // Clear the active notification
+      dismissNotification();
+      
+      return updatedBooking;
     } catch (error) {
       console.error('Error accepting booking:', error);
+      throw error;
     } finally {
       setIsLoading(false);
     }
   };
 
-  // Reject booking request
+  // Reject a booking request
   const rejectBooking = async (bookingId: string, reason?: string) => {
     try {
       setIsLoading(true);
-      await bookingRequestService.rejectBookingRequest(bookingId, reason);
+      const updatedBooking = await bookingRequestService.declineBookingRequest(bookingId, reason);
       
-      // Dismiss popup if it's the active booking
-      if (activeBookingRequest && activeBookingRequest._id === bookingId) {
-        setActiveBookingRequest(null);
-      }
+      // Refresh the list
+      await refreshBookingRequests();
       
-      // Remove from recent requests
-      setRecentBookingRequests(prev => 
-        prev.filter(req => req._id !== bookingId)
-      );
+      // Clear the active notification
+      dismissNotification();
+      
+      return updatedBooking;
     } catch (error) {
       console.error('Error rejecting booking:', error);
+      throw error;
     } finally {
       setIsLoading(false);
     }

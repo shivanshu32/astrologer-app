@@ -26,6 +26,7 @@ let LoginScreen: React.ComponentType<any>,
     CallScreen: React.ComponentType<any>, 
     VideoCallScreen: React.ComponentType<any>,
     BookingRequestsScreen: React.ComponentType<any>,
+    ConsultationsScreen: React.ComponentType<any>,
     DebugScreen: React.ComponentType<any>;
 
 try {
@@ -38,6 +39,7 @@ try {
   ProfileScreen = require('./src/screens/ProfileScreen').default;
   BookingsScreen = require('./src/screens/BookingsScreen').default;
   BookingRequestsScreen = require('./src/screens/BookingRequestsScreen').default;
+  ConsultationsScreen = require('./src/screens/ConsultationsScreen').default;
   DebugScreen = require('./src/screens/DebugScreen').default;
   
   // Additional screens
@@ -68,6 +70,7 @@ try {
   CallScreen = () => <PlaceholderScreen screenName="Call Screen" />;
   VideoCallScreen = () => <PlaceholderScreen screenName="Video Call Screen" />;
   BookingRequestsScreen = () => <PlaceholderScreen screenName="Booking Requests Screen" />;
+  ConsultationsScreen = () => <PlaceholderScreen screenName="Consultations Screen" />;
   DebugScreen = () => <PlaceholderScreen screenName="Debug Screen" />;
 }
 
@@ -144,6 +147,7 @@ function AppContent() {
         <Stack.Screen name="VoiceCallSession" component={CallScreen} />
         <Stack.Screen name="VideoCallSession" component={VideoCallScreen} />
         <Stack.Screen name="BookingRequestsTab" component={BookingRequestsScreen} />
+        <Stack.Screen name="Consultations" component={ConsultationsScreen} />
       </Stack.Navigator>
       
       {/* Render the booking request popup when authenticated */}

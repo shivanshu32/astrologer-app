@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useCallback, useRef } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   View, 
   Text, 
@@ -8,328 +8,299 @@ import {
   RefreshControl,
   Alert,
   ActivityIndicator,
-  Animated,
-  Platform
+  Platform,
+  Image
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { BookingRequest, bookingRequestService } from '../services/bookingRequestService';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import * as bookingRequestService from '../services/bookingRequestService';
 import { formatDate } from '../utils/dateUtils';
 import { useBookingNotification } from '../contexts/BookingNotificationContext';
 
+// Define types
 type BookingRequestsScreenProps = NativeStackNavigationProp<any>;
+type RequestStatusFilter = 'pending' | 'accepted' | 'declined' | 'all';
+
+interface User {
+  _id: string;
+  name: string;
+  mobileNumber?: string;
+  profileImage?: string;
+}
+
+interface BookingRequest {
+  _id: string;
+  userId: User | string;
+  astrologerId: string;
+  consultationType: 'chat' | 'call' | 'video';
+  status: 'pending' | 'accepted' | 'declined';
+  amount: number;
+  notes?: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 const BookingRequestsScreen = () => {
   const navigation = useNavigation<BookingRequestsScreenProps>();
   const [bookingRequests, setBookingRequests] = useState<BookingRequest[]>([]);
+  const [filteredRequests, setFilteredRequests] = useState<BookingRequest[]>([]);
+  const [activeFilter, setActiveFilter] = useState<RequestStatusFilter>('pending');
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [processingId, setProcessingId] = useState<string | null>(null);
-  const [newRequestIndicator, setNewRequestIndicator] = useState(false);
-  const fadeAnim = useRef(new Animated.Value(0)).current;
-  const lastRequestCountRef = useRef<number>(0);
-  const isMounted = useRef(false);
-  const isRefreshingRef = useRef(false);
-  const lastHandledUpdateRef = useRef<Date | null>(null);
-  const refreshTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-  const lastRefreshTimeRef = useRef<number>(0);
   
-  // Use notification context for socket status and refreshing
-  const { socketConnected, refreshBookingRequests: contextRefresh, lastUpdated } = useBookingNotification();
+  // Use notification context for socket status
+  const { socketConnected, lastUpdated } = useBookingNotification();
 
-  // Function to handle refresh with debouncing
-  const debouncedRefresh = useCallback(() => {
-    const now = Date.now();
-    const timeSinceLastRefresh = now - lastRefreshTimeRef.current;
-    const MIN_REFRESH_INTERVAL = 3000; // Minimum 3 seconds between refreshes
-    
-    // If we've refreshed recently, debounce the refresh
-    if (timeSinceLastRefresh < MIN_REFRESH_INTERVAL) {
-      console.log(`Debouncing refresh (${timeSinceLastRefresh}ms since last refresh)`);
-      
-      // Clear any existing timeout
-      if (refreshTimeoutRef.current) {
-        clearTimeout(refreshTimeoutRef.current);
-      }
-      
-      // Set a new timeout
-      refreshTimeoutRef.current = setTimeout(() => {
-        console.log('Executing debounced refresh');
-        loadBookingRequests();
-      }, MIN_REFRESH_INTERVAL - timeSinceLastRefresh);
-      
-      return;
+  // Apply filter to booking requests
+  const applyFilter = useCallback((requests: BookingRequest[], filter: RequestStatusFilter) => {
+    if (filter === 'all') {
+      return requests;
     }
-    
-    // Otherwise, refresh immediately
-    loadBookingRequests();
+    return requests.filter(req => req.status === filter);
   }, []);
 
-  // Animation for new request indicator
-  const pulseAnimation = () => {
-    Animated.sequence([
-      Animated.timing(fadeAnim, {
-        toValue: 1,
-        duration: 500,
-        useNativeDriver: true
-      }),
-      Animated.timing(fadeAnim, {
-        toValue: 0.3,
-        duration: 500,
-        useNativeDriver: true
-      })
-    ]).start(() => {
-      if (newRequestIndicator) {
-        pulseAnimation();
-      }
-    });
-  };
-
-  // Start animation when indicator changes
+  // Apply filter whenever it changes or requests change
   useEffect(() => {
-    if (newRequestIndicator) {
-      pulseAnimation();
-    }
-  }, [newRequestIndicator]);
+    setFilteredRequests(applyFilter(bookingRequests, activeFilter));
+  }, [activeFilter, bookingRequests, applyFilter]);
 
-  const loadBookingRequests = useCallback(async () => {
-    // Don't refresh if already refreshing
-    if (isRefreshingRef.current) {
-      console.log('Already refreshing, skipping duplicate call');
-      return;
-    }
-    
+  // Function to fetch booking requests
+  const fetchBookingRequests = useCallback(async () => {
     try {
-      lastRefreshTimeRef.current = Date.now();
-      isRefreshingRef.current = true;
-      
-      console.log('BookingRequestsScreen: Loading booking requests...');
       setLoading(true);
+      console.log('Fetching booking requests...');
       
-      // Use context refresh function to ensure consistency
-      const requests = await contextRefresh();
+      // Try different approaches to fetch booking requests
+      let requests: BookingRequest[] = [];
       
-      // Get only pending requests
-      const pendingRequests = requests.filter(req => req.status === 'pending');
-      
-      console.log(`BookingRequestsScreen: Loaded ${pendingRequests.length} pending requests`);
-      
-      // Check if we have new requests
-      if (isMounted.current && lastRequestCountRef.current < pendingRequests.length) {
-        console.log('New requests detected!');
-        setNewRequestIndicator(true);
+      try {
+        // 1. First try to get the astrologer ID from storage
+        const astrologerId = await AsyncStorage.getItem('astrologerId');
         
-        // Auto-dismiss indicator after 5 seconds
-        setTimeout(() => {
-          setNewRequestIndicator(false);
-        }, 5000);
+        if (astrologerId) {
+          console.log(`Using astrologer ID: ${astrologerId}`);
+          
+          // Use the endpoint that fetches by astrologer ID
+          const response = await bookingRequestService.getBookingRequestsByAstrologerId(astrologerId);
+          
+          if (response && response.length > 0) {
+            requests = response;
+            console.log(`Fetched ${requests.length} booking requests by astrologer ID`);
+          }
+        }
+      } catch (error) {
+        console.error('Error fetching by astrologer ID:', error);
       }
       
-      // Store the current count
-      lastRequestCountRef.current = pendingRequests.length;
-      
-      setBookingRequests(pendingRequests);
-      
-      // Store the current update timestamp
-      if (lastUpdated) {
-        lastHandledUpdateRef.current = new Date(lastUpdated.getTime());
-        console.log(`Updated lastHandledUpdateRef to: ${lastHandledUpdateRef.current.toISOString()}`);
+      // 2. If first attempt failed, try the astrologer endpoint
+      if (requests.length === 0) {
+        try {
+          console.log('Trying astrologer endpoint...');
+          const response = await bookingRequestService.getMyBookingRequests();
+          
+          if (response && response.length > 0) {
+            requests = response;
+            console.log(`Fetched ${requests.length} booking requests from astrologer endpoint`);
+          }
+        } catch (error) {
+          console.error('Error fetching from astrologer endpoint:', error);
+        }
       }
+      
+      // 3. If that also failed, try with filtered status
+      if (requests.length === 0 && activeFilter !== 'all') {
+        try {
+          console.log(`Trying filtered endpoint with status: ${activeFilter}`);
+          const response = await bookingRequestService.getFilteredBookingRequests(activeFilter);
+          
+          if (response && response.length > 0) {
+            requests = response;
+            console.log(`Fetched ${requests.length} booking requests with status filter`);
+          }
+        } catch (error) {
+          console.error('Error fetching with status filter:', error);
+        }
+      }
+      
+      // Store and process the requests
+      setBookingRequests(requests);
+      console.log(`Total booking requests: ${requests.length}`);
+      
+      return requests;
     } catch (error) {
-      console.error('Error loading booking requests:', error);
-      Alert.alert(
-        'Error',
-        'Failed to load booking requests. Please try again.'
-      );
+      console.error('Error fetching booking requests:', error);
+      Alert.alert('Error', 'Failed to load booking requests. Please try again.');
+      return [];
     } finally {
       setLoading(false);
       setRefreshing(false);
-      
-      // Clear the refreshing flag
-      setTimeout(() => {
-        console.log('Clearing isRefreshingRef flag');
-        isRefreshingRef.current = false;
-      }, 1000);
     }
-  }, [contextRefresh]);
+  }, [activeFilter]);
+
+  // Handle refresh
+  const handleRefresh = () => {
+    setRefreshing(true);
+    fetchBookingRequests();
+  };
 
   // When the screen comes into focus
   useFocusEffect(
     useCallback(() => {
-      debouncedRefresh();
-      
-      return () => {
-        // Clear any pending timeouts when screen loses focus
-        if (refreshTimeoutRef.current) {
-          clearTimeout(refreshTimeoutRef.current);
-        }
-      };
-    }, [debouncedRefresh])
+      fetchBookingRequests();
+    }, [fetchBookingRequests])
   );
-
-  // When component mounts
-  useEffect(() => {
-    isMounted.current = true;
-    return () => {
-      isMounted.current = false;
-      // Clear any pending refresh timeouts
-      if (refreshTimeoutRef.current) {
-        clearTimeout(refreshTimeoutRef.current);
-      }
-    };
-  }, []);
 
   // Watch for lastUpdated changes from context
   useEffect(() => {
-    // Skip if there's no lastUpdated value
-    if (!lastUpdated) {
-      return;
+    if (lastUpdated) {
+      console.log(`New updates detected, refreshing booking requests...`);
+      fetchBookingRequests();
     }
-    
-    // Skip if component is not mounted
-    if (!isMounted.current) {
-      console.log('Component not mounted, skipping refresh');
-      return;
-    }
-    
-    // Skip if already in a refresh cycle
-    if (isRefreshingRef.current) {
-      console.log('Already refreshing, skipping additional refresh trigger');
-      return;
-    }
-    
-    // Compare with last handled timestamp
-    const isNewUpdate = !lastHandledUpdateRef.current || 
-                         lastUpdated.getTime() > lastHandledUpdateRef.current.getTime();
-    
-    if (isNewUpdate) {
-      console.log(`BookingRequestsScreen: Detected new update at ${lastUpdated.toISOString()}`);
-      console.log(`Last handled: ${lastHandledUpdateRef.current ? lastHandledUpdateRef.current.toISOString() : 'none'}`);
-      console.log('Triggering refresh...');
-      debouncedRefresh(); // Use debounced refresh here instead
-    } else {
-      console.log('Update already handled, skipping refresh');
-    }
-  }, [lastUpdated, debouncedRefresh]);
+  }, [lastUpdated, fetchBookingRequests]);
 
-  const handleRefresh = () => {
-    setRefreshing(true);
-    setNewRequestIndicator(false);
-    debouncedRefresh(); // Use debounced refresh here
-  };
-
+  // Handle accept booking
   const handleAccept = async (id: string) => {
-    Alert.alert(
-      'Accept Request',
-      'Are you sure you want to accept this booking request?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Accept',
-          onPress: async () => {
-            try {
-              setProcessingId(id);
-              await bookingRequestService.acceptBookingRequest(id);
-              loadBookingRequests(); // Refresh the list
-              Alert.alert('Success', 'Booking request accepted successfully');
-            } catch (error) {
-              console.error('Error accepting booking request:', error);
-              Alert.alert(
-                'Error',
-                'Failed to accept booking request. Please try again.'
-              );
-            } finally {
-              setProcessingId(null);
+    try {
+      setProcessingId(id);
+      
+      // Confirm before accepting
+      Alert.alert(
+        'Accept Booking',
+        'Are you sure you want to accept this booking request?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Accept',
+            onPress: async () => {
+              try {
+                const updatedBooking = await bookingRequestService.acceptBookingRequest(id);
+                
+                // Update the local state with the updated booking
+                setBookingRequests(prevRequests => 
+                  prevRequests.map(req => 
+                    req._id === id ? { ...req, status: 'accepted' } : req
+                  )
+                );
+                
+                Alert.alert('Success', 'Booking request accepted successfully.');
+              } catch (error) {
+                console.error('Error accepting booking:', error);
+                Alert.alert('Error', 'Failed to accept booking. Please try again.');
+              } finally {
+                setProcessingId(null);
+              }
             }
           }
-        }
-      ]
-    );
+        ]
+      );
+    } catch (error) {
+      console.error('Error accepting booking:', error);
+      Alert.alert('Error', 'Failed to accept booking. Please try again.');
+      setProcessingId(null);
+    }
   };
 
+  // Handle reject booking
   const handleReject = async (id: string) => {
-    Alert.alert(
-      'Reject Request',
-      'Are you sure you want to reject this booking request?',
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Reject',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              setProcessingId(id);
-              await bookingRequestService.rejectBookingRequest(id);
-              loadBookingRequests(); // Refresh the list
-              Alert.alert('Success', 'Booking request rejected');
-            } catch (error) {
-              console.error('Error rejecting booking request:', error);
-              Alert.alert(
-                'Error',
-                'Failed to reject booking request. Please try again.'
-              );
-            } finally {
-              setProcessingId(null);
+    try {
+      setProcessingId(id);
+      
+      // Confirm before rejecting
+      Alert.alert(
+        'Reject Booking',
+        'Are you sure you want to reject this booking request?',
+        [
+          { text: 'Cancel', style: 'cancel' },
+          {
+            text: 'Reject',
+            style: 'destructive',
+            onPress: async () => {
+              try {
+                const updatedBooking = await bookingRequestService.declineBookingRequest(id);
+                
+                // Update the local state with the updated booking
+                setBookingRequests(prevRequests => 
+                  prevRequests.map(req => 
+                    req._id === id ? { ...req, status: 'declined' } : req
+                  )
+                );
+                
+                Alert.alert('Success', 'Booking request rejected successfully.');
+              } catch (error) {
+                console.error('Error rejecting booking:', error);
+                Alert.alert('Error', 'Failed to reject booking. Please try again.');
+              } finally {
+                setProcessingId(null);
+              }
             }
           }
-        }
-      ]
-    );
+        ]
+      );
+    } catch (error) {
+      console.error('Error rejecting booking:', error);
+      Alert.alert('Error', 'Failed to reject booking. Please try again.');
+      setProcessingId(null);
+    }
   };
 
+  // Helper function to get consultation type icon
   const getConsultationTypeIcon = (type: string) => {
     switch (type) {
       case 'chat':
-        return 'chatbubble-ellipses';
+        return <Ionicons name="chatbubble-outline" size={20} color="#4CAF50" />;
       case 'call':
-        return 'call';
+        return <Ionicons name="call-outline" size={20} color="#2196F3" />;
       case 'video':
-        return 'videocam';
+        return <Ionicons name="videocam-outline" size={20} color="#9C27B0" />;
       default:
-        return 'help-circle';
+        return <Ionicons name="help-circle-outline" size={20} color="#757575" />;
     }
   };
 
+  // Helper function to get status color
   const getStatusColor = (status: string) => {
     switch (status) {
       case 'pending':
-        return '#f59e0b'; // amber-500
-      case 'confirmed':
-        return '#10b981'; // emerald-500
-      case 'rejected':
-        return '#ef4444'; // red-500
-      case 'cancelled':
-        return '#6b7280'; // gray-500
-      case 'completed':
-        return '#3b82f6'; // blue-500
+        return '#FFC107'; // Yellow
+      case 'accepted':
+        return '#4CAF50'; // Green
+      case 'declined':
+        return '#F44336'; // Red
       default:
-        return '#6b7280'; // gray-500
+        return '#757575'; // Grey
     }
   };
 
+  // Helper function to get status text
   const getStatusText = (status: string) => {
     return status.charAt(0).toUpperCase() + status.slice(1);
   };
 
+  // Render booking item
   const renderBookingItem = ({ item }: { item: BookingRequest }) => {
-    const isPending = item.status === 'pending';
-    const isProcessing = processingId === item._id;
+    // Extract user info - handle both object and string cases
+    const userId = typeof item.userId === 'string' ? item.userId : item.userId._id;
+    const userName = typeof item.userId === 'string' ? 'User' : item.userId.name;
+    const userMobile = typeof item.userId === 'string' ? '' : item.userId.mobileNumber || '';
+    const userImage = typeof item.userId === 'string' ? null : item.userId.profileImage;
     
     return (
-      <View style={styles.bookingItem}>
+      <View style={styles.bookingCard}>
         <View style={styles.bookingHeader}>
           <View style={styles.userInfo}>
-            <View style={styles.iconContainer}>
-              <Ionicons 
-                name={getConsultationTypeIcon(item.consultationType)} 
-                size={24} 
-                color="#6366f1" 
-              />
-            </View>
+            {userImage ? (
+              <Image source={{ uri: userImage }} style={styles.userImage} />
+            ) : (
+              <View style={styles.userImagePlaceholder}>
+                <Text style={styles.userInitial}>{userName.charAt(0)}</Text>
+              </View>
+            )}
             <View>
-              <Text style={styles.userName}>{item.userId?.name || 'User'}</Text>
-              <Text style={styles.userPhone}>{item.userId?.mobileNumber || 'No phone'}</Text>
+              <Text style={styles.userName}>{userName}</Text>
+              {userMobile && <Text style={styles.userMobile}>{userMobile}</Text>}
             </View>
           </View>
           <View style={[styles.statusBadge, { backgroundColor: getStatusColor(item.status) }]}>
@@ -337,21 +308,29 @@ const BookingRequestsScreen = () => {
           </View>
         </View>
         
-        <View style={styles.bookingDetails}>
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Type:</Text>
-            <Text style={styles.detailValue}>
-              {item.consultationType.charAt(0).toUpperCase() + item.consultationType.slice(1)}
-            </Text>
+        <View style={styles.bookingInfo}>
+          <View style={styles.infoRow}>
+            <View style={styles.infoItem}>
+              <Text style={styles.infoLabel}>Type</Text>
+              <View style={styles.consultationType}>
+                {getConsultationTypeIcon(item.consultationType)}
+                <Text style={styles.consultationTypeText}>
+                  {item.consultationType.charAt(0).toUpperCase() + item.consultationType.slice(1)}
+                </Text>
+              </View>
+            </View>
+            
+            <View style={styles.infoItem}>
+              <Text style={styles.infoLabel}>Amount</Text>
+              <Text style={styles.infoValue}>₹{item.amount}</Text>
+            </View>
+            
+            <View style={styles.infoItem}>
+              <Text style={styles.infoLabel}>Date</Text>
+              <Text style={styles.infoValue}>{formatDate(item.createdAt)}</Text>
+            </View>
           </View>
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Amount:</Text>
-            <Text style={styles.detailValue}>₹{item.amount}</Text>
-          </View>
-          <View style={styles.detailRow}>
-            <Text style={styles.detailLabel}>Requested:</Text>
-            <Text style={styles.detailValue}>{formatDate(item.createdAt)}</Text>
-          </View>
+          
           {item.notes && (
             <View style={styles.notesContainer}>
               <Text style={styles.notesLabel}>Notes:</Text>
@@ -360,28 +339,35 @@ const BookingRequestsScreen = () => {
           )}
         </View>
         
-        {isPending && (
+        {item.status === 'pending' && (
           <View style={styles.actionButtons}>
-            <TouchableOpacity 
+            <TouchableOpacity
               style={[styles.actionButton, styles.rejectButton]}
               onPress={() => handleReject(item._id)}
-              disabled={isProcessing}
+              disabled={processingId === item._id}
             >
-              {isProcessing ? (
+              {processingId === item._id ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.actionButtonText}>Reject</Text>
+                <>
+                  <Ionicons name="close-outline" size={18} color="#fff" />
+                  <Text style={styles.actionButtonText}>Reject</Text>
+                </>
               )}
             </TouchableOpacity>
-            <TouchableOpacity 
+            
+            <TouchableOpacity
               style={[styles.actionButton, styles.acceptButton]}
               onPress={() => handleAccept(item._id)}
-              disabled={isProcessing}
+              disabled={processingId === item._id}
             >
-              {isProcessing ? (
+              {processingId === item._id ? (
                 <ActivityIndicator size="small" color="#fff" />
               ) : (
-                <Text style={styles.actionButtonText}>Accept</Text>
+                <>
+                  <Ionicons name="checkmark-outline" size={18} color="#fff" />
+                  <Text style={styles.actionButtonText}>Accept</Text>
+                </>
               )}
             </TouchableOpacity>
           </View>
@@ -390,64 +376,96 @@ const BookingRequestsScreen = () => {
     );
   };
 
+  // Render filter tabs
+  const renderFilterTabs = () => {
+    const tabs = [
+      { value: 'pending', label: 'Pending' },
+      { value: 'accepted', label: 'Accepted' },
+      { value: 'declined', label: 'Declined' },
+      { value: 'all', label: 'All' }
+    ] as const;
+    
+    return (
+      <View style={styles.filterContainer}>
+        {tabs.map(tab => (
+          <TouchableOpacity
+            key={tab.value}
+            style={[
+              styles.filterTab,
+              activeFilter === tab.value && styles.activeFilterTab
+            ]}
+            onPress={() => setActiveFilter(tab.value)}
+          >
+            <Text
+              style={[
+                styles.filterTabText,
+                activeFilter === tab.value && styles.activeFilterTabText
+              ]}
+            >
+              {tab.label}
+            </Text>
+          </TouchableOpacity>
+        ))}
+      </View>
+    );
+  };
+
+  // Render socket status indicator
+  const renderSocketStatus = () => (
+    <View style={styles.socketStatusContainer}>
+      <View style={[
+        styles.socketIndicator,
+        { backgroundColor: socketConnected ? '#4CAF50' : '#F44336' }
+      ]} />
+      <Text style={styles.socketStatusText}>
+        {socketConnected ? 'Connected' : 'Disconnected'}
+      </Text>
+    </View>
+  );
+
   return (
     <View style={styles.container}>
       <View style={styles.header}>
         <Text style={styles.headerTitle}>Booking Requests</Text>
-        
-        {/* Socket connection indicator */}
-        <View style={styles.connectionContainer}>
-          <View style={[
-            styles.connectionIndicator, 
-            socketConnected ? styles.connected : styles.disconnected
-          ]} />
-          <Text style={styles.connectionText}>
-            {socketConnected ? 'Connected' : 'Disconnected'}
-          </Text>
-        </View>
+        {renderSocketStatus()}
       </View>
       
-      {/* New request indicator */}
-      {newRequestIndicator && (
-        <Animated.View 
-          style={[
-            styles.newRequestsIndicator,
-            { opacity: fadeAnim }
-          ]}
-        >
-          <Ionicons name="notifications" size={20} color="#fff" />
-          <Text style={styles.newRequestsText}>New booking requests!</Text>
-        </Animated.View>
-      )}
+      {renderFilterTabs()}
       
-      {loading ? (
+      {loading && !refreshing ? (
         <View style={styles.loadingContainer}>
-          <ActivityIndicator size="large" color="#6366f1" />
+          <ActivityIndicator size="large" color="#6200ee" />
           <Text style={styles.loadingText}>Loading booking requests...</Text>
-        </View>
-      ) : bookingRequests.length === 0 ? (
-        <View style={styles.emptyContainer}>
-          <Ionicons name="calendar-outline" size={64} color="#d1d5db" />
-          <Text style={styles.emptyText}>No pending booking requests</Text>
-          <TouchableOpacity 
-            style={styles.refreshButton}
-            onPress={handleRefresh}
-          >
-            <Text style={styles.refreshButtonText}>Refresh</Text>
-          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
-          data={bookingRequests}
-          keyExtractor={(item) => item._id}
+          data={filteredRequests}
           renderItem={renderBookingItem}
+          keyExtractor={item => item._id}
           contentContainerStyle={styles.listContainer}
           refreshControl={
-            <RefreshControl 
-              refreshing={refreshing} 
-              onRefresh={handleRefresh} 
-              colors={['#6366f1']}
+            <RefreshControl
+              refreshing={refreshing}
+              onRefresh={handleRefresh}
+              colors={['#6200ee']}
             />
+          }
+          ListEmptyComponent={
+            <View style={styles.emptyContainer}>
+              <Ionicons name="calendar-outline" size={64} color="#CCCCCC" />
+              <Text style={styles.emptyText}>No booking requests found</Text>
+              <Text style={styles.emptySubtext}>
+                {activeFilter !== 'all' 
+                  ? `You don't have any ${activeFilter} booking requests.` 
+                  : 'You don\'t have any booking requests yet.'}
+              </Text>
+              <TouchableOpacity 
+                style={styles.refreshButton}
+                onPress={handleRefresh}
+              >
+                <Text style={styles.refreshButtonText}>Refresh</Text>
+              </TouchableOpacity>
+            </View>
           }
         />
       )}
@@ -458,7 +476,7 @@ const BookingRequestsScreen = () => {
 const styles = StyleSheet.create({
   container: {
     flex: 1,
-    backgroundColor: '#f9fafb',
+    backgroundColor: '#F5F5F5',
   },
   header: {
     flexDirection: 'row',
@@ -466,138 +484,133 @@ const styles = StyleSheet.create({
     alignItems: 'center',
     paddingHorizontal: 16,
     paddingVertical: 12,
-    borderBottomWidth: 1,
-    borderBottomColor: '#e5e7eb',
-    backgroundColor: '#fff'
+    backgroundColor: '#6200ee',
   },
   headerTitle: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
-    color: '#111827'
-  },
-  connectionContainer: {
-    flexDirection: 'row',
-    alignItems: 'center',
-  },
-  connectionIndicator: {
-    width: 10,
-    height: 10,
-    borderRadius: 5,
-    marginRight: 5
-  },
-  connected: {
-    backgroundColor: '#10b981' // Green
-  },
-  disconnected: {
-    backgroundColor: '#ef4444' // Red
-  },
-  connectionText: {
-    fontSize: 12,
-    color: '#6b7280'
-  },
-  newRequestsIndicator: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#6366f1',
-    paddingVertical: 8,
-    paddingHorizontal: 12,
-    marginHorizontal: 16,
-    marginTop: 8,
-    borderRadius: 8,
-    justifyContent: 'center'
-  },
-  newRequestsText: {
     color: '#fff',
+  },
+  socketStatusContainer: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  socketIndicator: {
+    width: 8,
+    height: 8,
+    borderRadius: 4,
+    marginRight: 6,
+  },
+  socketStatusText: {
+    fontSize: 12,
+    color: '#fff',
+  },
+  filterContainer: {
+    flexDirection: 'row',
+    backgroundColor: '#fff',
+    paddingVertical: 8,
+    paddingHorizontal: 8,
+    marginBottom: 8,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 1 },
+        shadowOpacity: 0.2,
+        shadowRadius: 1,
+      },
+      android: {
+        elevation: 2,
+      },
+    }),
+  },
+  filterTab: {
+    flex: 1,
+    paddingVertical: 8,
+    alignItems: 'center',
+    borderRadius: 20,
+    marginHorizontal: 4,
+  },
+  activeFilterTab: {
+    backgroundColor: '#e8e4ff',
+  },
+  filterTabText: {
     fontSize: 14,
+    color: '#666',
+  },
+  activeFilterTabText: {
+    color: '#6200ee',
     fontWeight: 'bold',
-    marginLeft: 6
+  },
+  listContainer: {
+    padding: 12,
+    paddingBottom: 24,
   },
   loadingContainer: {
     flex: 1,
     justifyContent: 'center',
     alignItems: 'center',
-    backgroundColor: '#fff',
   },
   loadingText: {
-    marginTop: 16,
+    marginTop: 12,
     fontSize: 16,
-    color: '#6b7280',
+    color: '#666',
   },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#fff',
-    padding: 24,
-  },
-  emptyText: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#4b5563',
-    marginTop: 16,
-  },
-  emptySubtext: {
-    fontSize: 14,
-    color: '#6b7280',
-    textAlign: 'center',
-    marginTop: 8,
-  },
-  connectionWarning: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    backgroundColor: '#fef3c7',
-    padding: 12,
-    borderRadius: 8,
-    marginTop: 16,
-  },
-  connectionWarningText: {
-    fontSize: 14,
-    color: '#92400e',
-    marginLeft: 8,
-  },
-  listContainer: {
-    padding: 16,
-  },
-  bookingItem: {
+  bookingCard: {
     backgroundColor: '#fff',
     borderRadius: 12,
-    marginBottom: 16,
+    marginBottom: 12,
     overflow: 'hidden',
-    shadowColor: '#000',
-    shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.1,
-    shadowRadius: 2,
-    elevation: 2,
+    ...Platform.select({
+      ios: {
+        shadowColor: '#000',
+        shadowOffset: { width: 0, height: 2 },
+        shadowOpacity: 0.1,
+        shadowRadius: 4,
+      },
+      android: {
+        elevation: 3,
+      },
+    }),
   },
   bookingHeader: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    padding: 16,
+    padding: 12,
     borderBottomWidth: 1,
-    borderBottomColor: '#f3f4f6',
+    borderBottomColor: '#f0f0f0',
   },
   userInfo: {
     flexDirection: 'row',
     alignItems: 'center',
   },
-  iconContainer: {
+  userImage: {
     width: 40,
     height: 40,
     borderRadius: 20,
-    backgroundColor: '#e0e7ff',
+    marginRight: 10,
+  },
+  userImagePlaceholder: {
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: '#e0e0e0',
     justifyContent: 'center',
     alignItems: 'center',
-    marginRight: 12,
+    marginRight: 10,
+  },
+  userInitial: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#666',
   },
   userName: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#111827',
   },
-  userPhone: {
-    fontSize: 14,
-    color: '#6b7280',
+  userMobile: {
+    fontSize: 12,
+    color: '#666',
   },
   statusBadge: {
     paddingHorizontal: 10,
@@ -609,69 +622,101 @@ const styles = StyleSheet.create({
     fontWeight: 'bold',
     color: '#fff',
   },
-  bookingDetails: {
-    padding: 16,
+  bookingInfo: {
+    padding: 12,
   },
-  detailRow: {
+  infoRow: {
     flexDirection: 'row',
-    marginBottom: 8,
+    justifyContent: 'space-between',
   },
-  detailLabel: {
-    width: 90,
-    fontSize: 14,
-    color: '#6b7280',
-  },
-  detailValue: {
+  infoItem: {
     flex: 1,
+  },
+  infoLabel: {
+    fontSize: 12,
+    color: '#666',
+    marginBottom: 4,
+  },
+  infoValue: {
     fontSize: 14,
-    color: '#111827',
+    fontWeight: '500',
+  },
+  consultationType: {
+    flexDirection: 'row',
+    alignItems: 'center',
+  },
+  consultationTypeText: {
+    marginLeft: 4,
+    fontSize: 14,
     fontWeight: '500',
   },
   notesContainer: {
-    marginTop: 8,
-    padding: 12,
-    backgroundColor: '#f9fafb',
-    borderRadius: 8,
+    marginTop: 10,
+    padding: 8,
+    backgroundColor: '#f9f9f9',
+    borderRadius: 6,
   },
   notesLabel: {
-    fontSize: 14,
-    color: '#6b7280',
-    marginBottom: 4,
+    fontSize: 12,
+    fontWeight: 'bold',
+    color: '#666',
   },
   notesText: {
     fontSize: 14,
-    color: '#111827',
+    color: '#333',
   },
   actionButtons: {
     flexDirection: 'row',
     borderTopWidth: 1,
-    borderTopColor: '#f3f4f6',
+    borderTopColor: '#f0f0f0',
   },
   actionButton: {
     flex: 1,
-    paddingVertical: 12,
-    alignItems: 'center',
+    flexDirection: 'row',
     justifyContent: 'center',
-  },
-  rejectButton: {
-    backgroundColor: '#fee2e2',
+    alignItems: 'center',
+    paddingVertical: 12,
   },
   acceptButton: {
-    backgroundColor: '#dcfce7',
+    backgroundColor: '#4CAF50',
+  },
+  rejectButton: {
+    backgroundColor: '#F44336',
   },
   actionButtonText: {
+    color: '#fff',
     fontWeight: 'bold',
+    marginLeft: 4,
   },
-  refreshButton: {
-    padding: 12,
-    backgroundColor: '#6366f1',
-    borderRadius: 8,
+  emptyContainer: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: 48,
+  },
+  emptyText: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    color: '#666',
     marginTop: 16,
   },
+  emptySubtext: {
+    fontSize: 14,
+    color: '#999',
+    marginTop: 8,
+    textAlign: 'center',
+    paddingHorizontal: 24,
+  },
+  refreshButton: {
+    marginTop: 16,
+    paddingHorizontal: 20,
+    paddingVertical: 10,
+    backgroundColor: '#6200ee',
+    borderRadius: 20,
+  },
   refreshButtonText: {
-    fontSize: 16,
-    fontWeight: 'bold',
     color: '#fff',
+    fontSize: 14,
+    fontWeight: '500',
   },
 });
 

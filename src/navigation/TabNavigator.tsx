@@ -2,6 +2,8 @@ import React from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { MainStackParamList, TabNavigatorParamList } from './types';
+import OnlineStatusToggle from '../components/OnlineStatusToggle';
+import { View } from 'react-native';
 
 // Import screens
 import HomeScreen from '../screens/HomeScreen';
@@ -38,7 +40,12 @@ export const TabNavigator = () => {
         options={{ 
           title: 'Home',
           headerTitle: 'Jyotish Call',
-          headerTitleAlign: 'center'
+          headerTitleAlign: 'center',
+          headerRight: () => (
+            <View style={{ marginRight: 16 }}>
+              <OnlineStatusToggle variant="switch" />
+            </View>
+          )
         }} 
       />
       <Tab.Screen 

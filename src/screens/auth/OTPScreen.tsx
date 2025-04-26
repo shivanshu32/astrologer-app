@@ -128,22 +128,30 @@ export default function OTPScreen({ route, navigation }: Props) {
           // Set up api with the token
           api.defaults.headers.common['Authorization'] = `Bearer ${response.token}`;
           
-          // Use the correct profile endpoint which is '/astrologers/profile' not '/astrologers/me'
+          // The correct endpoint for fetching current user's profile. Needs to be separate from the /:id endpoint
           const profileResult = await api.get('/astrologers/profile');
           
           console.log('Astrologer profile response:', JSON.stringify(profileResult.data, null, 2));
           
-          if (profileResult.data) {
-            // Store the full astrologer profile for future use
-            await AsyncStorage.setItem('astrologerProfile', JSON.stringify(profileResult.data));
-            console.log('Stored astrologer profile with ID:', profileResult.data._id);
+          if (profileResult.data && profileResult.data.data) {
+            // Get the astrologer data from the correct path
+            const astrologerData = profileResult.data.data;
             
-            // Add the astrologer ID to the user data
-            userData.astrologerId = profileResult.data._id;
-            await AsyncStorage.setItem('userData', JSON.stringify(userData));
-            
-            // Also store just the ID separately for easier access
-            await AsyncStorage.setItem('astrologerId', profileResult.data._id);
+            // Make sure we have a valid ID
+            if (astrologerData && astrologerData._id) {
+              // Store the full astrologer profile for future use
+              await AsyncStorage.setItem('astrologerProfile', JSON.stringify(astrologerData));
+              console.log('Stored astrologer profile with ID:', astrologerData._id);
+              
+              // Add the astrologer ID to the user data
+              userData.astrologerId = astrologerData._id;
+              await AsyncStorage.setItem('userData', JSON.stringify(userData));
+              
+              // Also store just the ID separately for easier access
+              await AsyncStorage.setItem('astrologerId', astrologerData._id);
+            } else {
+              console.warn('Astrologer profile found but missing _id field:', astrologerData);
+            }
           } else {
             console.warn('Could not fetch astrologer profile - unexpected response format');
           }
@@ -151,18 +159,21 @@ export default function OTPScreen({ route, navigation }: Props) {
           console.error('Error fetching astrologer profile:', profileError);
           console.log('Will try another approach to get astrologer ID...');
           
-          // Try to get the astrologer ID through the booking requests endpoint as a fallback
+          // Try to get the astrologer ID directly from user ID since they should match
           try {
-            const bookingResult = await api.get('/booking-requests/astrologer');
-            console.log('Booking requests response:', JSON.stringify(bookingResult.data, null, 2));
+            console.log('Using user ID as astrologer ID fallback');
+            const astrologerId = response.user.id || response.user._id;
             
-            // The booking endpoint includes the astrologer profile info in the error message
-            if (bookingResult.data && bookingResult.data.message && 
-                bookingResult.data.message.includes('astrologer profile')) {
-              console.log('Trying to extract astrologer ID from booking requests response');
+            if (astrologerId) {
+              console.log('Using user ID as astrologer ID:', astrologerId);
+              userData.astrologerId = astrologerId;
+              await AsyncStorage.setItem('userData', JSON.stringify(userData));
+              await AsyncStorage.setItem('astrologerId', astrologerId);
+            } else {
+              console.warn('Could not get a valid astrologer ID, not saving to AsyncStorage');
             }
-          } catch (bookingError) {
-            console.error('Error fetching booking requests:', bookingError);
+          } catch (idError) {
+            console.error('Error setting astrologer ID fallback:', idError);
           }
         }
         
@@ -180,14 +191,41 @@ export default function OTPScreen({ route, navigation }: Props) {
         console.log('Navigation command executed');
       } else {
         console.warn('Authentication failed:', response?.message || 'Unknown reason');
-        Alert.alert('Authentication Failed', response?.message || 'Failed to verify OTP');
+        
+        // Check if this is the specific error for astrologer not found
+        if (response?.message?.includes('Astrologer with this mobile number not found')) {
+          Alert.alert(
+            'Astrologer Not Found', 
+            'No astrologer profile exists with this mobile number. Please contact support if you believe this is an error.'
+          );
+        } else {
+          Alert.alert('Authentication Failed', response?.message || 'Failed to verify OTP');
+        }
       }
-    } catch (error) {
+    } catch (error: any) {
       console.error('Error authenticating:', error);
-      Alert.alert(
-        'Authentication Error',
-        'Could not verify your OTP. Please try again.'
-      );
+      
+      // Check for specific error responses
+      if (error.response && error.response.data) {
+        const errorData = error.response.data;
+        
+        if (errorData.message?.includes('Astrologer with this mobile number not found')) {
+          Alert.alert(
+            'Astrologer Not Found', 
+            'No astrologer profile exists with this mobile number. Please contact support if you believe this is an error.'
+          );
+        } else {
+          Alert.alert(
+            'Authentication Error',
+            errorData.message || 'Could not verify your OTP. Please try again.'
+          );
+        }
+      } else {
+        Alert.alert(
+          'Authentication Error',
+          'Could not verify your OTP. Please try again.'
+        );
+      }
     } finally {
       setLoading(false);
     }

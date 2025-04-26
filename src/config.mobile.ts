@@ -1,7 +1,12 @@
+/**
+ * MOBILE DEVICE CONFIG - Copy this file to config.ts when testing on a real device
+ * This file is optimized for direct installation on a mobile device connecting to your computer
+ */
+
 import { Platform } from 'react-native';
 
-// Define API URLs for different environments - Update your server IP here
-export const LOCAL_IP = '192.168.29.231'; // Your computer's IP on your local network
+// Update this to your computer's IP address on your local network
+export const LOCAL_IP = '192.168.29.231';
 export const API_PORT = '3002';
 
 // Default to localhost for web development
@@ -16,38 +21,12 @@ export const ANDROID_EMULATOR_URL = `http://10.0.2.2:${API_PORT}/api`;
 // Production API URL
 export const PROD_API_URL = 'https://your-production-api.com/api';
 
-// Choose the right API URL based on environment
-export const API_URL = (() => {
-  // For production environment, use production URL or env variable
-  if (process.env.NODE_ENV === 'production' || process.env.EXPO_PUBLIC_API_URL) {
-    return process.env.EXPO_PUBLIC_API_URL || PROD_API_URL;
-  }
-  
-  // IMPORTANT: On Android, use the special 10.0.2.2 IP for emulator
-  if (Platform.OS === 'android') {
-    console.log('🤖 Android detected - using 10.0.2.2 for emulator access');
-    return ANDROID_EMULATOR_URL;
-  }
-  
-  // For web, use standard localhost
-  if (typeof window !== 'undefined') {
-    console.log('🌐 Web browser detected - using localhost');
-    return DEV_API_URL;
-  }
-  
-  // For iOS simulator, use localhost
-  if (Platform.OS === 'ios') {
-    console.log('📱 iOS simulator detected - using localhost');
-    return DEV_API_URL;
-  }
-  
-  // Fallback to the local network IP for other cases
-  console.log('📡 Other platform - using local network IP');
-  return LOCAL_NETWORK_API_URL;
-})();
+// ** MOBILE DEVICE SPECIFIC CONFIG **
+// This is a simplified version that prioritizes direct connection to your computer's IP
+export const API_URL = LOCAL_NETWORK_API_URL;
 
-// Log the selected API URL for debugging
-console.log(`📍 Selected API URL: ${API_URL}`);
+// Output API URL for debugging
+console.log('🔴 MOBILE DEVICE CONFIG: Using API URL:', API_URL);
 
 // App identifier - consistent across the app
 export const APP_IDENTIFIER = 'astrologer-app';
@@ -73,9 +52,7 @@ export const API_ENDPOINTS = {
     '/consultations',
     '/consultations/astrologer',
     '/astrologer/consultations',
-    '/bookings/consultations',
-    '/booking-requests/astrologer',
-    '/bookings/me'
+    '/bookings/consultations'
   ],
   
   // Bookings endpoints - try these in order
@@ -83,7 +60,6 @@ export const API_ENDPOINTS = {
     '/bookings/astrologer/me',
     '/bookings/astrologer',
     '/bookings/me',
-    '/booking-requests/astrologer',
     '/astrologer/bookings'
   ]
 };

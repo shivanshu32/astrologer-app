@@ -16,6 +16,7 @@ import { CommonActions } from '@react-navigation/native';
 import { useBookingNotification } from '../contexts/BookingNotificationContext';
 import NewBookingRequestsSection from '../components/NewBookingRequestsSection';
 import SocketDiagnostics from '../components/SocketDiagnostics';
+import OnlineStatusToggle from '../components/OnlineStatusToggle';
 
 type HomeScreenNavigationProp = NativeStackNavigationProp<MainStackParamList> & 
   BottomTabNavigationProp<TabNavigatorParamList>;
@@ -43,9 +44,8 @@ const HomeScreen = () => {
   };
 
   const navigateToConsultations = () => {
-    // This would navigate to a Consultations screen once it's implemented
-    // For now, just stay on the current screen
-    console.log('Navigate to Consultations - not yet implemented');
+    // Navigate to the Consultations screen that is already implemented
+    navigation.navigate('Consultations');
   };
 
   const navigateToEarnings = () => {
@@ -82,6 +82,11 @@ const HomeScreen = () => {
           </View>
         </View>
         <Text style={styles.subGreeting}>Manage your consultations and earnings</Text>
+      </View>
+
+      {/* Online Status Toggle Section */}
+      <View style={styles.onlineStatusSection}>
+        <OnlineStatusToggle variant="button" />
       </View>
 
       {/* New Booking Requests Section */}
@@ -201,26 +206,41 @@ const styles = StyleSheet.create({
     backgroundColor: 'rgba(239, 68, 68, 0.6)', // Red with opacity
   },
   greeting: {
-    fontSize: 24,
+    fontSize: 22,
     fontWeight: 'bold',
-    color: 'white',
+    color: '#ffffff',
   },
   subGreeting: {
-    fontSize: 16,
-    color: 'rgba(255, 255, 255, 0.8)',
+    fontSize: 14,
+    color: '#e0e7ff',
     marginTop: 5,
   },
+  onlineStatusSection: {
+    alignItems: 'center',
+    paddingVertical: 16,
+    marginVertical: 8,
+    backgroundColor: 'white',
+    borderRadius: 8,
+    marginHorizontal: 16,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 1 },
+    shadowOpacity: 0.1,
+    shadowRadius: 2,
+    elevation: 2,
+  },
   bookingRequestsContainer: {
-    padding: 16,
+    marginTop: 16,
+    paddingHorizontal: 16,
   },
   quickActionsContainer: {
-    padding: 16,
+    marginTop: 16,
+    paddingHorizontal: 16,
   },
   sectionTitle: {
     fontSize: 18,
     fontWeight: 'bold',
-    color: '#111827',
-    marginBottom: 16,
+    color: '#1f2937',
+    marginBottom: 12,
   },
   quickActions: {
     flexDirection: 'row',
@@ -235,14 +255,14 @@ const styles = StyleSheet.create({
     marginBottom: 16,
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.1,
     shadowRadius: 2,
     elevation: 2,
   },
   iconContainer: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     justifyContent: 'center',
     alignItems: 'center',
     marginBottom: 12,
@@ -250,7 +270,7 @@ const styles = StyleSheet.create({
   actionTitle: {
     fontSize: 16,
     fontWeight: 'bold',
-    color: '#111827',
+    color: '#1f2937',
     marginBottom: 4,
   },
   actionDescription: {
@@ -258,31 +278,30 @@ const styles = StyleSheet.create({
     color: '#6b7280',
   },
   statsContainer: {
-    padding: 16,
-    marginBottom: 20,
+    marginTop: 8,
+    paddingHorizontal: 16,
+    marginBottom: 16,
   },
   statsCards: {
     flexDirection: 'row',
     justifyContent: 'space-between',
   },
   statCard: {
-    flex: 1,
+    width: '31%',
     backgroundColor: 'white',
     borderRadius: 12,
-    padding: 16,
-    marginHorizontal: 4,
+    padding: 12,
     alignItems: 'center',
-    justifyContent: 'center',
     shadowColor: '#000',
     shadowOffset: { width: 0, height: 1 },
-    shadowOpacity: 0.05,
+    shadowOpacity: 0.1,
     shadowRadius: 2,
     elevation: 2,
   },
   statValue: {
     fontSize: 20,
     fontWeight: 'bold',
-    color: '#6366f1',
+    color: '#1f2937',
     marginBottom: 4,
   },
   statLabel: {
@@ -291,20 +310,19 @@ const styles = StyleSheet.create({
     textAlign: 'center',
   },
   diagnosticsSection: {
-    padding: 16,
-    marginTop: 20,
-    marginBottom: 20
+    marginTop: 16,
+    paddingHorizontal: 16,
+    marginBottom: 32,
+    alignItems: 'center',
   },
   diagnosticsButton: {
-    backgroundColor: '#6366f1',
     padding: 10,
+    backgroundColor: '#f3f4f6',
     borderRadius: 8,
-    alignItems: 'center',
-    marginBottom: 10,
   },
   diagnosticsButtonText: {
-    color: 'white',
-    fontWeight: 'bold',
+    color: '#6b7280',
+    fontSize: 14,
   },
 });
 

@@ -3,10 +3,10 @@ import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { MainStackParamList } from './types';
 import { TabNavigator } from './TabNavigator';
 
-// Placeholder components - to be implemented later
-const ConsultationsScreen = () => null;
-const EarningsScreen = () => null;
-const SettingsScreen = () => null;
+// Import screens
+import ConsultationsScreen from '../screens/ConsultationsScreen';
+import EarningsScreen from '../screens/EarningsScreen';
+import SettingsScreen from '../screens/SettingsScreen';
 
 const Stack = createNativeStackNavigator<MainStackParamList>();
 

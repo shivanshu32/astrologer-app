@@ -1,7 +1,7 @@
 import { io, Socket } from 'socket.io-client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
-import { API_URL, LOCAL_NETWORK_API_URL } from '../config';
+import { API_URL, LOCAL_NETWORK_API_URL, APP_IDENTIFIER } from '../config';
 
 // For easier debugging
 const isDev = __DEV__;
@@ -125,11 +125,12 @@ export const connectSocket = async (): Promise<Socket | null> => {
       mobileNumber?: string;
       astrologerId?: string;
       email?: string;
+      userId?: string;
     } = {
       token,
       // Add explicit astrologer type for this app - backend will use this if token doesn't specify
       userType: 'astrologer',
-      appIdentifier: 'astrologer-app'
+      appIdentifier: APP_IDENTIFIER // Use the imported constant
     };
 
     // Try to get the astrologer profile data from storage
@@ -152,7 +153,7 @@ export const connectSocket = async (): Promise<Socket | null> => {
         
         // Add mobile number to auth data for easier identification by backend
         if (userData.mobileNumber || userData.mobile) {
-          log(`Including mobile number in socket auth: ${userData.mobileNumber || userData.mobile}`);
+          log(`Adding mobile number to socket auth: ${userData.mobileNumber || userData.mobile}`);
           authData.mobileNumber = userData.mobileNumber || userData.mobile;
         }
         
@@ -160,6 +161,12 @@ export const connectSocket = async (): Promise<Socket | null> => {
         if (userData.email) {
           log(`Including email in socket auth: ${userData.email}`);
           authData.email = userData.email;
+        }
+        
+        // Add user ID but keep userType as astrologer
+        if (userData.id || userData._id) {
+          log(`Adding userId (${userData.id || userData._id}) to socket auth data`);
+          authData.userId = userData.id || userData._id;
         }
         
         // If we have astrologer profile, use its ID
@@ -197,136 +204,89 @@ export const connectSocket = async (): Promise<Socket | null> => {
       logError('Error getting user/astrologer data from storage:', error);
     }
 
+    // Just before creating the socket, add a final check
+    // Check if appIdentifier has been overwritten somehow
+    if (authData.appIdentifier !== APP_IDENTIFIER) {
+      logError(`App identifier was incorrectly set to ${authData.appIdentifier}, fixing to ${APP_IDENTIFIER}`);
+      authData.appIdentifier = APP_IDENTIFIER;
+    }
+
+    // Check if userType has been overwritten
+    if (authData.userType !== 'astrologer') {
+      logError(`User type was incorrectly set to ${authData.userType}, fixing to astrologer`);
+      authData.userType = 'astrologer';
+    }
+
+    // Log the final auth data for debugging
+    log(`Final socket auth data: ${JSON.stringify(authData)}`);
+
     // Connect with authentication
-    log(`Connecting to socket at ${baseURL} with auth:`, authData);
-    socket = io(baseURL, {
-      auth: authData,
-      transports: ['websocket'],
-      forceNew: true,
-      reconnectionAttempts: MAX_RECONNECT_ATTEMPTS,
-      reconnectionDelay: 1000,
-      timeout: 10000,
-      query: {
-        // Add additional query parameters for identification
-        appType: 'astrologer-app',
-        appVersion: '1.0.0',
-        platform: Platform.OS
-      }
-    });
-
-    // Log connection attempt
-    log('Socket instance created, connecting...');
-
-    // Setup event handlers before connection is established
-    socket.on('connect_error', (error) => {
-      logError(`Socket connection error: ${error.message}`, error);
-      if (error.message.includes('jwt')) {
-        logError('JWT authentication error detected. Token may be invalid or expired.');
-      }
-      isConnecting = false;
-      reconnectSocket();
-    });
-
-    // Setup event listeners
-    socket.on('connect', () => {
-      log(`Socket connected successfully, ID: ${socket?.id}`);
-      isConnecting = false;
-      reconnectAttempts = 0;
-      
-      // Debug: Emit a test event to verify connection
-      log('Sending test connection event');
-      socket?.emit('test-connection', { clientTime: new Date().toISOString() });
-    });
-
-    // Add handler for welcome message from server
-    socket.on('welcome', (data) => {
-      log('Received welcome message from server:', data);
-      // This indicates the server has successfully authenticated us
-    });
-
-    socket.on('disconnect', (reason) => {
-      logError(`Socket disconnected: ${reason}`);
-      isConnecting = false;
-      
-      // Handle potential reconnection
-      if (reason === 'io server disconnect' || reason === 'io client disconnect') {
-        // The disconnection was intentional, so don't reconnect
-        log('Disconnection was intentional, not reconnecting');
-      } else {
-        // The connection was dropped due to network issues, try to reconnect
-        log('Unexpected disconnection, will try to reconnect');
-        reconnectSocket();
-      }
-    });
-
-    socket.on('error', (error) => {
-      logError('Socket error:', error);
-      isConnecting = false;
-    });
-
-    // Listen for new booking requests
-    socket.on('new-booking-request', (data) => {
-      log('✅ New booking request received:', data);
-      
-      // Add more detailed logging to diagnose notification issues
-      try {
-        // Ensure data exists and has expected properties
-        if (!data) {
-          logError('Received empty booking request data');
-          return;
-        }
-        
-        // Log the complete data for debugging
-        log('Full booking request data:', JSON.stringify(data, null, 2));
-        
-        log(`Booking ID: ${data._id || 'No ID'}`);
-        log(`Status: ${data.status || 'pending'}`);
-        log(`User ID: ${data.userId?._id || data.userId || 'Unknown'}`);
-        log(`Time received: ${new Date().toISOString()}`);
-        
-        // Add additional debug info
-        log('Active socket listeners:', bookingListeners.length);
-        log('Socket connection state:', socket?.connected ? 'connected' : 'disconnected');
-        
-        // Force refresh the UI by dispatching an event to the document
-        if (typeof document !== 'undefined') {
-          document.dispatchEvent(new Event('booking-notification-received'));
-        }
-        
-        // Try to ping back to confirm receipt (helps debug bidirectional issues)
-        if (socket) {
-          socket.emit('booking-notification-received', { 
-            bookingId: data._id, 
-            receivedAt: new Date().toISOString(),
-            clientInfo: {
-              platform: Platform.OS,
-              appType: 'astrologer-app'
-            }
-          });
-        }
-        
-        // Notify all registered listeners
-        if (bookingListeners.length > 0) {
-          log(`Notifying ${bookingListeners.length} listeners`);
-          bookingListeners.forEach(listener => {
-            try {
-              listener(data);
-            } catch (listenerError: any) {
-              logError(`Error in booking request listener: ${listenerError.message}`, listenerError);
-            }
-          });
-        } else {
-          logError('No booking request listeners registered!');
-        }
-      } catch (err) {
-        logError('Error processing booking request:', err);
-      }
-    });
+    log(`Creating socket with auth data: ${JSON.stringify(authData)}`);
     
-    // Add a test event to verify server communication
-    socket.on('test-response', (data) => {
-      log('Received test response from server:', data);
-    });
+    // Try different socket configurations to overcome WebSocket errors
+    try {
+      // First try to connect with WebSocket transport only, which is more efficient
+      log('Connecting with WebSocket transport');
+      socket = io(baseURL, {
+        auth: authData,
+        transports: ['websocket'],
+        forceNew: true,
+        reconnectionAttempts: MAX_RECONNECT_ATTEMPTS,
+        reconnectionDelay: 1000,
+        timeout: 15000, // Increase timeout
+        query: {
+          appType: 'astrologer-app',
+          appVersion: '1.0.0',
+          platform: Platform.OS
+        }
+      });
+      
+      // Set up error handler to detect WebSocket issues
+      socket.on('connect_error', (error) => {
+        logError(`WebSocket connection error: ${error.message}`, error);
+        
+        // If we get a WebSocket error, try the fallback approach with polling
+        if (error.message.includes('websocket')) {
+          logError('WebSocket transport failed, will try with polling fallback');
+          
+          // Disconnect the failed socket
+          socket?.disconnect();
+          
+          // Now try with both polling and WebSocket (polling first as fallback)
+          log('Connecting with polling fallback transport');
+          socket = io(baseURL, {
+            auth: authData,
+            transports: ['polling', 'websocket'], // Try polling first, then WebSocket
+            forceNew: true,
+            reconnectionAttempts: MAX_RECONNECT_ATTEMPTS,
+            reconnectionDelay: 1000,
+            timeout: 20000, // Even longer timeout for polling
+            query: {
+              appType: 'astrologer-app',
+              appVersion: '1.0.0',
+              platform: Platform.OS,
+              transportFallback: 'true' // Mark this as using fallback transport
+            }
+          });
+          
+          // Set up event handlers for the new socket
+          setupSocketEventHandlers(socket);
+        } else if (error.message.includes('jwt')) {
+          logError('JWT authentication error detected. Token may be invalid or expired.');
+        }
+        
+        isConnecting = false;
+        reconnectSocket();
+      });
+      
+      // Set up other event handlers
+      setupSocketEventHandlers(socket);
+      
+    } catch (socketError) {
+      logError('Error creating socket:', socketError);
+      isConnecting = false;
+      return null;
+    }
 
     return socket;
   } catch (error) {
@@ -334,6 +294,112 @@ export const connectSocket = async (): Promise<Socket | null> => {
     isConnecting = false;
     return null;
   }
+};
+
+// Helper function to set up socket event handlers
+const setupSocketEventHandlers = (socketInstance: Socket) => {
+  if (!socketInstance) return;
+  
+  // Setup event listeners
+  socketInstance.on('connect', () => {
+    log(`Socket connected successfully, ID: ${socketInstance?.id}`);
+    isConnecting = false;
+    reconnectAttempts = 0;
+    
+    // Debug: Emit a test event to verify connection
+    log('Sending test connection event');
+    socketInstance?.emit('test-connection', { clientTime: new Date().toISOString() });
+  });
+
+  // Add handler for welcome message from server
+  socketInstance.on('welcome', (data) => {
+    log('Received welcome message from server:', data);
+    // This indicates the server has successfully authenticated us
+  });
+
+  socketInstance.on('disconnect', (reason) => {
+    logError(`Socket disconnected: ${reason}`);
+    isConnecting = false;
+    
+    // Handle potential reconnection
+    if (reason === 'io server disconnect' || reason === 'io client disconnect') {
+      // The disconnection was intentional, so don't reconnect
+      log('Disconnection was intentional, not reconnecting');
+    } else {
+      // The connection was dropped due to network issues, try to reconnect
+      log('Unexpected disconnection, will try to reconnect');
+      reconnectSocket();
+    }
+  });
+
+  socketInstance.on('error', (error) => {
+    logError('Socket error:', error);
+    isConnecting = false;
+  });
+
+  // Listen for new booking requests
+  socketInstance.on('new-booking-request', (data) => {
+    log('✅ New booking request received:', data);
+    
+    // Add more detailed logging to diagnose notification issues
+    try {
+      // Ensure data exists and has expected properties
+      if (!data) {
+        logError('Received empty booking request data');
+        return;
+      }
+      
+      // Log the complete data for debugging
+      log('Full booking request data:', JSON.stringify(data, null, 2));
+      
+      log(`Booking ID: ${data._id || 'No ID'}`);
+      log(`Status: ${data.status || 'pending'}`);
+      log(`User ID: ${data.userId?._id || data.userId || 'Unknown'}`);
+      log(`Time received: ${new Date().toISOString()}`);
+      
+      // Add additional debug info
+      log('Active socket listeners:', bookingListeners.length);
+      log('Socket connection state:', socketInstance?.connected ? 'connected' : 'disconnected');
+      
+      // Force refresh the UI by dispatching an event to the document
+      if (typeof document !== 'undefined') {
+        document.dispatchEvent(new Event('booking-notification-received'));
+      }
+      
+      // Try to ping back to confirm receipt (helps debug bidirectional issues)
+      if (socketInstance) {
+        socketInstance.emit('booking-notification-received', { 
+          bookingId: data._id, 
+          receivedAt: new Date().toISOString(),
+          clientInfo: {
+            platform: Platform.OS,
+            appType: 'astrologer-app'
+          }
+        });
+      }
+      
+      // Notify all registered listeners
+      if (bookingListeners.length > 0) {
+        log(`Notifying ${bookingListeners.length} listeners`);
+        bookingListeners.forEach(listener => {
+          try {
+            listener(data);
+          } catch (listenerError: any) {
+            logError(`Error in booking request listener: ${listenerError.message}`, listenerError);
+          }
+        });
+      } else {
+        logError('No booking request listeners registered!');
+      }
+    } catch (err) {
+      logError('Error processing booking request:', err);
+    }
+  });
+  
+  // Add a test event to verify server communication
+  socketInstance.on('test-response', (data) => {
+    log('Received test response from server:', data);
+  });
 };
 
 // Disconnect socket
