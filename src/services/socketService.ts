@@ -51,9 +51,207 @@ const decodeJwt = (token: string): any => {
   }
 };
 
-// Connect to socket
+// Helper function to get a valid astrologer ID
+const getValidAstrologerId = async (): Promise<string | null> => {
+  try {
+    // Store all potential IDs for debugging
+    const potentialIds: {source: string, id: string}[] = [];
+    
+    // Try to get from astrologer profile in storage
+    const astrologerProfileString = await AsyncStorage.getItem('astrologerProfile');
+    if (astrologerProfileString) {
+      const profile = JSON.parse(astrologerProfileString);
+      if (profile && profile._id) {
+        log(`Got valid astrologer ID from profile: ${profile._id}`);
+        potentialIds.push({source: 'profile', id: profile._id});
+        
+        // Store this ID to ensure consistency across the app
+        await AsyncStorage.setItem('astrologerId', profile._id);
+        
+        // Update userData if it exists
+        try {
+          const userDataStr = await AsyncStorage.getItem('userData');
+          if (userDataStr) {
+            const userData = JSON.parse(userDataStr);
+            if (userData) {
+              userData.astrologerId = profile._id;
+              await AsyncStorage.setItem('userData', JSON.stringify(userData));
+              log(`Updated astrologerId in userData: ${profile._id}`);
+            }
+          }
+        } catch (userDataError) {
+          logError('Error updating userData with astrologerId:', userDataError);
+        }
+        
+        return profile._id;
+      }
+    }
+    
+    // Try from direct astrologerId in storage
+    const directId = await AsyncStorage.getItem('astrologerId');
+    if (directId) {
+      log(`Got valid astrologer ID from direct storage: ${directId}`);
+      potentialIds.push({source: 'directId', id: directId});
+      return directId;
+    }
+    
+    // Try from userData 
+    const userDataStr = await AsyncStorage.getItem('userData');
+    if (userDataStr) {
+      const userData = JSON.parse(userDataStr);
+      if (userData && userData._id) {
+        log(`Got valid astrologer ID from userData._id: ${userData._id}`);
+        potentialIds.push({source: 'userData._id', id: userData._id});
+        
+        // Store for future consistency
+        await AsyncStorage.setItem('astrologerId', userData._id);
+        return userData._id;
+      }
+      
+      if (userData && userData.astrologerId) {
+        log(`Got valid astrologer ID from userData.astrologerId: ${userData.astrologerId}`);
+        potentialIds.push({source: 'userData.astrologerId', id: userData.astrologerId});
+        return userData.astrologerId;
+      }
+      
+      if (userData && userData.id) {
+        log(`Got valid astrologer ID from userData.id: ${userData.id}`);
+        potentialIds.push({source: 'userData.id', id: userData.id});
+        
+        // Store for future consistency
+        await AsyncStorage.setItem('astrologerId', userData.id);
+        // Also update userData.astrologerId
+        userData.astrologerId = userData.id;
+        await AsyncStorage.setItem('userData', JSON.stringify(userData));
+        
+        return userData.id;
+      }
+    }
+    
+    // Try from JWT token as last resort
+    try {
+      const token = await AsyncStorage.getItem('token');
+      if (token) {
+        const decoded = decodeJwt(token);
+        if (decoded) {
+          if (decoded._id) {
+            log(`Got valid astrologer ID from token._id: ${decoded._id}`);
+            potentialIds.push({source: 'token._id', id: decoded._id});
+            
+            // Store for future use
+            await AsyncStorage.setItem('astrologerId', decoded._id);
+            return decoded._id;
+          }
+          
+          if (decoded.id) {
+            log(`Got valid astrologer ID from token.id: ${decoded.id}`);
+            potentialIds.push({source: 'token.id', id: decoded.id});
+            
+            // Store for future use
+            await AsyncStorage.setItem('astrologerId', decoded.id);
+            return decoded.id;
+          }
+        }
+      }
+    } catch (tokenError) {
+      logError('Error extracting ID from token:', tokenError);
+    }
+    
+    // Log all potential IDs for debugging
+    if (potentialIds.length > 0) {
+      log('Found potential astrologer IDs but none were used:', JSON.stringify(potentialIds, null, 2));
+    }
+    
+    return null;
+  } catch (error) {
+    logError('Error getting valid astrologer ID:', error);
+    return null;
+  }
+};
+
+// Keep track of recent socket connection attempts
+let lastConnectionAttempt = 0;
+const CONNECTION_THROTTLE_MS = 2000; // 2 seconds minimum between connection attempts
+
+// Track the last known socket state to reduce logging
+let lastKnownSocketState = false;
+
+// Keep track of joined chat rooms to prevent duplicate join attempts
+const joinedRooms = new Map<string, { timestamp: number, success: boolean }>();
+const JOIN_ROOM_CACHE_TTL = 30000; // 30 seconds
+
+// Add missing JoinRoomResult type
+interface JoinRoomResult {
+  success: boolean;
+  error?: string | null;
+  data?: any;
+}
+
+// Add missing checkNetworkConnectivity function
+const checkNetworkConnectivity = async (): Promise<boolean> => {
+  try {
+    console.log('[SOCKET] Checking network connectivity...');
+    const networkTimeout = new Promise((_, reject) => 
+      setTimeout(() => reject(new Error('Network check timeout')), 3000)
+    );
+    
+    const networkCheck = fetch(API_URL, { 
+      method: 'HEAD',
+      cache: 'no-store' 
+    });
+    
+    await Promise.race([networkCheck, networkTimeout]);
+    return true;
+  } catch (error) {
+    console.error('[SOCKET] Network connectivity check failed:', error);
+    return false;
+  }
+};
+
+/**
+ * Check if the socket is already connected
+ */
+export const isSocketConnected = (): boolean => {
+  if (!socket) return false;
+  
+  // Add more reliable connection checking
+  const connected = socket.connected && !socket.disconnected;
+  
+  // Only log connection status when it changes
+  if (connected !== lastKnownSocketState) {
+    console.log(`[SOCKET] Connection status changed: ${connected ? 'connected' : 'disconnected'}`);
+    lastKnownSocketState = connected;
+  }
+  
+  return connected;
+};
+
+/**
+ * Connect to the socket server
+ */
 export const connectSocket = async (): Promise<Socket | null> => {
   try {
+    // Check if we're throttling connection attempts
+    const now = Date.now();
+    if (now - lastConnectionAttempt < CONNECTION_THROTTLE_MS) {
+      // If recent connection attempt, just return the existing socket
+      if (socket) {
+        return socket;
+      }
+      // Wait the required time before attempting again
+      await new Promise(resolve => setTimeout(resolve, CONNECTION_THROTTLE_MS - (now - lastConnectionAttempt)));
+    }
+    
+    // Update the last connection attempt time
+    lastConnectionAttempt = now;
+    
+    // If socket is already connected, return it without logging redundant messages
+    if (isSocketConnected()) {
+      return socket;
+    }
+    
+    console.log('[SOCKET] Connecting to socket server...');
+    
     // If already connecting, don't start another connection attempt
     if (isConnecting) {
       log('Socket connection already in progress...');
@@ -396,6 +594,38 @@ const setupSocketEventHandlers = (socketInstance: Socket) => {
     }
   });
   
+  // Add chat-related event handlers
+  
+  // Handle successful chat room join
+  socketInstance.on('chat:joined', (data) => {
+    log('Successfully joined chat room:', data);
+  });
+  
+  // Handle chat errors
+  socketInstance.on('chat:error', (error) => {
+    logError('Chat error from server:', error);
+  });
+  
+  // Handle new message received
+  socketInstance.on('chat:newMessage', (data) => {
+    log('New chat message received:', data);
+  });
+  
+  // Handle message sent confirmation
+  socketInstance.on('chat:messageSent', (data) => {
+    log('Message sent confirmation received:', data);
+  });
+  
+  // Handle typing notifications
+  socketInstance.on('chat:typing', (data) => {
+    log('User typing status update:', data);
+  });
+  
+  // Handle messages read status updates
+  socketInstance.on('chat:messagesRead', (data) => {
+    log('Messages read status update:', data);
+  });
+  
   // Add a test event to verify server communication
   socketInstance.on('test-response', (data) => {
     log('Received test response from server:', data);
@@ -444,11 +674,6 @@ export const onNewBookingRequest = (callback: BookingListener) => {
       log(`Removed booking request listener. Total listeners: ${bookingListeners.length}`);
     }
   };
-};
-
-// Check if socket is connected
-export const isSocketConnected = (): boolean => {
-  return socket?.connected || false;
 };
 
 /**
@@ -569,11 +794,245 @@ export const testBookingNotification = () => {
   return true;
 };
 
+/**
+ * Join a chat room with either chat ID or booking ID
+ */
+export const joinChatRoom = async (chatId: string = '', bookingId: string = ''): Promise<JoinRoomResult> => {
+  try {
+    // Skip if we have neither chat ID nor booking ID
+    if (!chatId && !bookingId) {
+      console.log('[SOCKET] Cannot join chat room: No chat ID or booking ID provided');
+      return { success: false, error: 'No chat ID or booking ID provided' };
+    }
+    
+    // Generate a cache key using both IDs to uniquely identify this room
+    const roomCacheKey = `${chatId}:${bookingId}`;
+    
+    // Check if we've recently tried joining this room
+    const cachedJoin = joinedRooms.get(roomCacheKey);
+    if (cachedJoin && Date.now() - cachedJoin.timestamp < JOIN_ROOM_CACHE_TTL) {
+      console.log(`[SOCKET] Using cached join result for room ${roomCacheKey}: ${cachedJoin.success ? 'success' : 'failed'}`);
+      return { success: cachedJoin.success, error: cachedJoin.success ? null : 'Previous join attempt failed' };
+    }
+    
+    // Check network connectivity first
+    console.log('[SOCKET] Checking network connectivity before attempting to join chat room...');
+    const connected = await checkNetworkConnectivity();
+    if (!connected) {
+      console.error('[SOCKET] Network not available for chat join');
+      joinedRooms.set(roomCacheKey, { timestamp: Date.now(), success: false });
+      return { success: false, error: 'Network not available' };
+    }
+    
+    console.log('[SOCKET] Network connectivity confirmed for chat join');
+      
+    // Connect to socket if not already connected
+    const socket = await connectSocket();
+    if (!socket) {
+      console.error('[SOCKET] Cannot join chat room: Socket connection failed');
+      joinedRooms.set(roomCacheKey, { timestamp: Date.now(), success: false });
+        return { success: false, error: 'Socket connection failed' };
+      }
+    
+    // Determine which ID to use for joining
+    let roomId = chatId || bookingId;
+    let roomType = chatId ? 'chatId' : 'bookingId';
+    
+    console.log(`[SOCKET] Joining chat room with ${roomType}: ${roomId}`);
+    
+    // Get the astrologer ID
+    const astrologerId = await getValidAstrologerId();
+    if (!astrologerId) {
+      console.error('[SOCKET] Cannot join chat room: Could not determine astrologer ID');
+      joinedRooms.set(roomCacheKey, { timestamp: Date.now(), success: false });
+      return { success: false, error: 'Could not determine astrologer ID' };
+    }
+    
+    // Prepare payload for join event
+    const payload: any = {
+      userType: 'astrologer',
+      astrologerId: astrologerId
+    };
+    
+    // Add the appropriate ID to the payload
+    if (chatId) {
+      payload.chatId = chatId;
+    }
+    if (bookingId) {
+      payload.bookingId = bookingId;
+          }
+    
+    // Join room via promise
+    return new Promise((resolve) => {
+      // Set a timeout in case the server doesn't respond
+      const timeoutId = setTimeout(() => {
+        console.error('[SOCKET ERROR] Chat room join operation timed out');
+      socket.off('chat:joined');
+      socket.off('chat:error');
+        joinedRooms.set(roomCacheKey, { timestamp: Date.now(), success: false });
+        resolve({ success: false, error: 'Join operation timed out' });
+      }, 5000);
+      
+      // Listen for join success
+      socket.once('chat:joined', (data) => {
+        clearTimeout(timeoutId);
+        console.log('[SOCKET] Successfully joined chat room:', data?.roomId || roomId);
+        socket.off('chat:error');
+        joinedRooms.set(roomCacheKey, { timestamp: Date.now(), success: true });
+        resolve({ success: true, data });
+      });
+      
+      // Listen for join error
+      socket.once('chat:error', (error) => {
+        clearTimeout(timeoutId);
+        console.error('[SOCKET ERROR] Error joining chat room:', error);
+        socket.off('chat:joined');
+        joinedRooms.set(roomCacheKey, { timestamp: Date.now(), success: false });
+        resolve({ success: false, error: error?.message || 'Failed to join chat room' });
+      });
+      
+      // First try HTTP API approach for more reliable joining
+      console.log('[SOCKET] Attempting to join chat room via HTTP API first');
+      let joinUrl = '';
+      
+      if (chatId) {
+        joinUrl = `${API_URL}/chats/${chatId}/join`;
+      } else if (bookingId) {
+        joinUrl = `${API_URL}/chats/booking/${bookingId}/join`;
+        }
+        
+      if (joinUrl) {
+        console.log(`[SOCKET] Making HTTP request to: ${joinUrl}`);
+          
+        // Get token first, then make the fetch request
+        getToken().then(authToken => {
+          fetch(joinUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': `Bearer ${authToken}`,
+              'X-App-Identifier': APP_IDENTIFIER,
+              'X-Astrologer-Id': astrologerId
+            },
+            body: JSON.stringify(payload)
+          })
+          .then(response => {
+            if (response.ok) {
+              return response.json();
+        }
+            console.log(`[SOCKET] HTTP chat join failed with status: ${response.status}`);
+            throw new Error('HTTP join failed');
+          })
+          .then(data => {
+            if (data?.success) {
+              // HTTP join successful, we're already joined via HTTP so socket will confirm
+              console.log('[SOCKET] Successfully joined chat room via HTTP');
+        }
+          })
+          .catch(() => {
+            // If HTTP join fails, try socket join
+            console.log('[SOCKET] Emitting chat:join event with payload:', payload);
+            socket.emit('chat:join', payload);
+          });
+        });
+      } else {
+        // If no URL, just use socket
+        console.log('[SOCKET] Emitting chat:join event with payload:', payload);
+        socket.emit('chat:join', payload);
+      }
+    });
+  } catch (error) {
+    console.error('[SOCKET ERROR] Error in joinChatRoom:', error);
+    return { success: false, error: 'Unknown error joining chat room' };
+  }
+};
+
+/**
+ * Send a message via socket
+ * @param chatId Chat ID to send message to
+ * @param bookingId Related booking ID
+ * @param message Message content
+ * @param senderId ID of the sender (astrologer ID)
+ * @returns Promise with success status and message ID if successful
+ */
+export const sendChatMessage = async (
+  chatId: string,
+  bookingId: string,
+  message: string,
+  senderId?: string
+): Promise<{ success: boolean; messageId?: string; error?: string }> => {
+  try {
+    log(`Attempting to send message to chat: ${chatId}`);
+    
+    // If socket is not connected, try to connect first
+    if (!socket || !socket.connected) {
+      log('Socket not connected. Attempting to connect first...');
+      const connectionResult = await connectSocket();
+      if (!connectionResult) {
+        throw new Error('Failed to establish socket connection');
+      }
+    }
+    
+    // Ensure we're in the chat room
+    await joinChatRoom(chatId);
+    
+    // Send the message
+    return new Promise((resolve) => {
+      // Set timeout for send operation
+      const timeout = setTimeout(() => {
+        log('Send message operation timed out');
+        resolve({ success: false, error: 'Operation timed out' });
+      }, 5000);
+      
+      // Setup success handler
+      socket?.once('chat:messageSent', (data) => {
+        clearTimeout(timeout);
+        log(`Message sent successfully to chat: ${chatId}`, data);
+        resolve({ success: true, messageId: data?.messageId || Date.now().toString() });
+      });
+      
+      // Setup error handler
+      socket?.once('chat:error', (error) => {
+        clearTimeout(timeout);
+        logError(`Error sending message to chat: ${chatId}`, error);
+        resolve({ success: false, error: error?.message || 'Unknown error' });
+      });
+      
+      // Emit message event with simplified payload
+      // IMPORTANT: Only include essential fields - backend will get astrologer ID from socket auth
+      log(`Emitting chat:sendMessage event for chat ${chatId}`);
+      socket?.emit('chat:sendMessage', {
+        chatId,
+        bookingId,
+        message,
+        senderType: 'astrologer'
+        // Do NOT include senderId - backend will get it from the socket authentication
+      });
+    });
+  } catch (error: any) {
+    logError(`Error in sendChatMessage: ${error.message}`);
+    return { success: false, error: error.message };
+  }
+};
+
+// Define baseUrl for HTTP requests
+const getBaseUrl = () => {
+  // Strip /api suffix if present
+  return API_URL.endsWith('/api') ? API_URL.slice(0, -4) : API_URL;
+};
+
+// Get token from AsyncStorage (used in several places)
+const getToken = async (): Promise<string | null> => {
+  return await AsyncStorage.getItem('token');
+};
+
 export default {
   connectSocket,
   disconnectSocket,
   onNewBookingRequest,
   isSocketConnected,
   runDiagnostics,
-  testBookingNotification
+  testBookingNotification,
+  joinChatRoom,
+  sendChatMessage
 }; 

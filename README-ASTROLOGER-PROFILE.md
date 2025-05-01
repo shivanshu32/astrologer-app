@@ -91,4 +91,27 @@ After the admin has fixed the issue:
 2. Check the "Astrologer Profile" in the debug screen to confirm it's working
 3. Go to the Booking Requests screen to see if your bookings now appear
 
-If the issue persists, try clearing the app's storage from the Debug screen by tapping "Clear AsyncStorage" and then log in again. 
+If the issue persists, try clearing the app's storage from the Debug screen by tapping "Clear AsyncStorage" and then log in again.
+
+## Profile API Endpoints
+
+The astrologer profile can be accessed through the following endpoints:
+
+1. `/astrologers/profile` - Primary endpoint for accessing the astrologer profile
+2. `/profile/astrologer` - Alternative endpoint 
+3. `/auth/me` - General authentication endpoint that may return user information
+4. `/user/profile` - User profile endpoint
+5. `/debug/auth-me` - Debug endpoint that returns both user and astrologer data
+
+### Recent Fixes
+
+- Updated endpoints to use correct path: `/astrologers/profile` (was incorrectly using `/astrologer/profile`)
+- Removed the non-existent `/profile` endpoint from the API calls
+- Updated production API URL to `https://api.jyotish.app/api`
+- Improved error handling for API calls
+
+If you encounter "All API URLs failed for /profile" error, make sure:
+1. The backend server is running on port 3002
+2. Your auth token is valid
+3. You have an astrologer profile associated with your user account
+4. The network connection to the API server is working 

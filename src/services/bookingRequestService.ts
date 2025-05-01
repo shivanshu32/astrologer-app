@@ -1,7 +1,7 @@
-import api from './api';
+import api, { profileService } from './api';
 import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import { API_URL, APP_IDENTIFIER, LOCAL_IP, API_PORT } from '../config';
+import { API_URL, APP_IDENTIFIER, LOCAL_IP, API_PORT, API_ENDPOINTS } from '../config';
 import { Platform } from 'react-native';
 
 export interface BookingRequest {
@@ -75,26 +75,15 @@ export const getAstrologerProfile = async (): Promise<any> => {
   try {
     console.log('Fetching astrologer profile...');
     
-    // First try normal API call with the correct endpoint
+    // First try using profileService
     try {
-      const response = await api.get('/astrologer/profile');
-      if (response.data && response.data.success) {
-        console.log('Astrologer profile found:', response.data.data);
-        return response.data.data;
-      }
+      return await profileService.getProfile();
     } catch (apiError: any) {
-      console.log('Error fetching astrologer profile with API:', apiError.message);
+      console.log('Error fetching astrologer profile with profileService:', apiError.message);
     }
     
     // Try using direct API call if the first method fails
-    const endpoints = [
-      '/astrologer/profile',
-      '/profile/astrologer',
-      '/profile',
-      '/auth/me',
-      '/user/profile',
-      '/debug/auth-me' // Our new debug endpoint
-    ];
+    const endpoints = API_ENDPOINTS.PROFILE;
     
     for (const endpoint of endpoints) {
       try {
@@ -197,7 +186,7 @@ async function directApiCall(endpoint: string, method = 'get', data?: any) {
       `http://10.0.2.2:${localPort}/api`, // Android emulator special IP with correct port
       `http://${LOCAL_IP}:${localPort}/api`, // Local network IP with correct port
       `http://localhost:${localPort}/api`, // Standard localhost with correct port
-      'https://api.jyotish.example.com/api' // Replace with your actual production API URL
+      'https://api.jyotish.app/api' // Production API URL
     ];
     
     // Loop through each base URL
@@ -426,7 +415,16 @@ export const acceptBookingRequest = async (bookingId: string): Promise<BookingRe
   try {
     // First try using normal API method with retry
     return await withRetry(async () => {
-      const response = await api.put(`/booking-requests/${bookingId}/accept`);
+      const token = await AsyncStorage.getItem('token');
+      const response = await api.put(`/booking-requests/${bookingId}/accept`, {}, {
+        headers: {
+          'Authorization': `Bearer ${token}`,
+          'Content-Type': 'application/json',
+          'X-App-Identifier': APP_IDENTIFIER,
+          'User-Agent': 'astrologer-app-mobile',
+          'X-App-Platform': Platform.OS
+        }
+      });
       
       if (response.data && response.data.success) {
         console.log('Successfully accepted booking request');
@@ -439,15 +437,50 @@ export const acceptBookingRequest = async (bookingId: string): Promise<BookingRe
     console.error('API method failed after retries, trying direct API call:', apiError);
     
     try {
-      // Try direct API call
-      const response = await directApiCall(`/booking-requests/${bookingId}/accept`, 'put');
+      // Try multiple endpoints for accepting booking
+      const endpoints = [
+        `/booking-requests/${bookingId}/accept`,
+        `/api/booking-requests/${bookingId}/accept`,
+        `/bookings/${bookingId}/accept`,
+        `/api/bookings/${bookingId}/accept`,
+        `/booking/${bookingId}/accept`,
+        `/api/booking/${bookingId}/accept`
+      ];
       
-      if (response && (response.success || response.data)) {
-        console.log('Successfully accepted booking request via direct API');
-        return response.data || response;
+      for (const endpoint of endpoints) {
+        try {
+          console.log(`Trying to accept booking with endpoint: ${endpoint}`);
+          const response = await directApiCall(endpoint, 'put', {});
+          
+          if (response && (response.success || response.data)) {
+            console.log(`Successfully accepted booking request via endpoint: ${endpoint}`);
+            return response.data || response;
+          }
+        } catch (endpointError) {
+          console.error(`Failed to accept booking with endpoint ${endpoint}:`, endpointError);
+          // Continue to next endpoint
+        }
       }
       
-      throw new Error('Direct API call failed with invalid response');
+      // If all endpoints fail, try with astrologer ID
+      try {
+        const astrologerId = await AsyncStorage.getItem('astrologerId');
+        if (astrologerId) {
+          console.log(`Trying to accept booking with astrologer ID: ${astrologerId}`);
+          const response = await directApiCall(`/booking-requests/${bookingId}/accept`, 'put', {
+            astrologerId
+          });
+          
+          if (response && (response.success || response.data)) {
+            console.log('Successfully accepted booking request with astrologer ID');
+            return response.data || response;
+          }
+        }
+      } catch (astrologerError) {
+        console.error('Failed to accept booking with astrologer ID:', astrologerError);
+      }
+      
+      throw new Error('All booking acceptance endpoints failed');
     } catch (directError) {
       console.error('Failed to accept booking request:', directError);
       throw directError;
@@ -518,7 +551,7 @@ export const debugDirectBookingFetch = async (): Promise<any> => {
         `http://10.0.2.2:${localPort}/api`, 
         `http://${LOCAL_IP}:${localPort}/api`, 
         `http://localhost:${localPort}/api`,
-        'https://api.jyotish.example.com/api' // Replace with your actual production API URL
+        'https://api.jyotish.app/api' // Production API URL
       ];
       
       for (const baseUrl of baseUrls) {
@@ -679,7 +712,7 @@ export const lookupAstrologerByMobile = async (mobileNumber: string): Promise<an
       `http://10.0.2.2:${API_PORT}/api`, // Android emulator special IP
       `http://${LOCAL_IP}:${API_PORT}/api`, // Local network IP
       `http://localhost:${API_PORT}/api`, // Standard localhost
-      'https://api.jyotish.example.com/api' // Replace with your actual production API URL
+      'https://api.jyotish.app/api' // Production API URL
     ];
     
     // Try each URL to find one that works

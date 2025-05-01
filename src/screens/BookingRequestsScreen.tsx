@@ -18,6 +18,7 @@ import AsyncStorage from '@react-native-async-storage/async-storage';
 import * as bookingRequestService from '../services/bookingRequestService';
 import { formatDate } from '../utils/dateUtils';
 import { useBookingNotification } from '../contexts/BookingNotificationContext';
+import ChatButton from '../components/ChatButton';
 
 // Define types
 type BookingRequestsScreenProps = NativeStackNavigationProp<any>;
@@ -372,6 +373,31 @@ const BookingRequestsScreen = () => {
             </TouchableOpacity>
           </View>
         )}
+        
+        {item.status === 'accepted' && (
+          <View style={styles.acceptedActionsContainer}>
+            <ChatButton 
+              bookingId={item._id}
+              userId={userId}
+              status={item.status}
+            />
+            
+            {/* Only show start consultation button for call or video consultations */}
+            {(item.consultationType === 'call' || item.consultationType === 'video') && (
+              <TouchableOpacity 
+                style={styles.startConsultationButton}
+                onPress={() => navigation.navigate('Consultation', { bookingId: item._id })}
+              >
+                <Ionicons 
+                  name={item.consultationType === 'call' ? "call-outline" : "videocam-outline"} 
+                  size={16} 
+                  color="#fff" 
+                />
+                <Text style={styles.buttonText}>Start Consultation</Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        )}
       </View>
     );
   };
@@ -717,6 +743,29 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 14,
     fontWeight: '500',
+  },
+  acceptedActionsContainer: {
+    flexDirection: 'row',
+    borderTopWidth: 1,
+    borderTopColor: '#f0f0f0',
+    padding: 12,
+    justifyContent: 'space-around',
+    alignItems: 'center',
+  },
+  startConsultationButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'center',
+    backgroundColor: '#4CAF50',
+    paddingVertical: 8,
+    paddingHorizontal: 16,
+    borderRadius: 8,
+    gap: 6,
+  },
+  buttonText: {
+    color: '#fff',
+    fontWeight: '500',
+    fontSize: 14,
   },
 });
 

@@ -9,6 +9,7 @@ import { View } from 'react-native';
 import HomeScreen from '../screens/HomeScreen';
 import BookingRequestsScreen from '../screens/BookingRequestsScreen';
 import ProfileScreen from '../screens/ProfileScreen';
+import ChatsScreen from '../screens/ChatsScreen';
 
 const Tab = createBottomTabNavigator<TabNavigatorParamList>();
 
@@ -23,6 +24,8 @@ export const TabNavigator = () => {
             iconName = focused ? 'home' : 'home-outline';
           } else if (route.name === 'BookingRequestsTab') {
             iconName = focused ? 'list' : 'list-outline';
+          } else if (route.name === 'ChatsTab') {
+            iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
           } else if (route.name === 'ProfileTab') {
             iconName = focused ? 'person' : 'person-outline';
           }
@@ -54,6 +57,15 @@ export const TabNavigator = () => {
         options={{ 
           title: 'Requests',
           headerTitle: 'Booking Requests',
+          headerTitleAlign: 'center'
+        }} 
+      />
+      <Tab.Screen 
+        name="ChatsTab" 
+        component={ChatsScreen} 
+        options={{ 
+          title: 'Chats',
+          headerTitle: 'My Chats',
           headerTitleAlign: 'center'
         }} 
       />

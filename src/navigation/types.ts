@@ -8,6 +8,7 @@ export type AuthStackParamList = {
 export type TabNavigatorParamList = {
   HomeTab: undefined;
   BookingRequestsTab: undefined;
+  ChatsTab: undefined;
   ProfileTab: undefined;
 };
 
@@ -19,6 +20,13 @@ export type MainStackParamList = {
   Earnings: undefined;
   Settings: undefined;
   BookingRequests: undefined;
+  Chat: {
+    bookingId: string;
+    chatId?: string;
+  };
+  Consultation: {
+    bookingId: string;
+  };
 };
 
 export type RootStackParamList = {

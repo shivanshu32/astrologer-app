@@ -84,6 +84,22 @@ export default function OTPScreen({ route, navigation }: Props) {
         const decodedToken = decodeJwt(response.token);
         console.log('Decoded token payload:', decodedToken);
         
+        // Get astrologer ID from various sources
+        const astrologerId = decodedToken?.id || decodedToken?._id || response.user?.id || response.user?._id;
+        
+        // Ensure we have a valid astrologer ID
+        if (!astrologerId) {
+          console.warn('⚠️ Warning: Could not extract astrologer ID from token or response');
+          
+          // For now, continue with login but this might cause issues later
+          Alert.alert(
+            'Warning',
+            'Could not determine your unique ID which may affect some features. Please contact support if you experience issues.'
+          );
+        } else {
+          console.log(`✓ Found astrologer ID: ${astrologerId}`);
+        }
+        
         // Verify token has correct userType for astrologer app
         if (!decodedToken.userType || decodedToken.userType !== 'astrologer') {
           console.warn('⚠️ Warning: JWT token does not have userType "astrologer"');
@@ -92,7 +108,6 @@ export default function OTPScreen({ route, navigation }: Props) {
         
         console.log('Calling login with token and user data...');
         
-        // Add additional user data for socket identification
         // Store in AsyncStorage first to make it available to socket service
         await AsyncStorage.setItem('userType', 'astrologer');
         await AsyncStorage.setItem('authToken', response.token); // Alternative token key
@@ -117,12 +132,19 @@ export default function OTPScreen({ route, navigation }: Props) {
           role: 'astrologer',
           userType: 'astrologer', // Add userType property explicitly
           type: 'astrologer', // Add legacy type property
+          // Always set astrologerId if available
+          ...(astrologerId && { astrologerId })
         };
         
         // Store for socket service to use
         await AsyncStorage.setItem('userData', JSON.stringify(userData));
         
-        // Now fetch the astrologer profile to get the astrologer ID
+        // Also store astrologerId directly for easier access
+        if (astrologerId) {
+          await AsyncStorage.setItem('astrologerId', astrologerId);
+        }
+        
+        // Now fetch the astrologer profile to get more details
         console.log('Fetching astrologer profile...');
         try {
           // Set up api with the token

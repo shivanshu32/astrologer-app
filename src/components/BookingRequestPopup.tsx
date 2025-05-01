@@ -7,11 +7,17 @@ import {
   TouchableOpacity, 
   ActivityIndicator,
   Dimensions,
-  Image
+  Image,
+  Alert
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useBookingNotification } from '../contexts/BookingNotificationContext';
 import { BookingRequest } from '../services/bookingRequestService';
+import { useNavigation } from '@react-navigation/native';
+import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { RootStackParamList } from '../types/navigation';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { chatService } from '../services/chatService';
 
 const { width } = Dimensions.get('window');
 
@@ -24,6 +30,8 @@ const BookingRequestPopup: React.FC = () => {
     socketConnected,
     dismissNotification
   } = useBookingNotification();
+  
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
 
   // Log when the popup receives booking data for debugging
   useEffect(() => {
@@ -81,6 +89,132 @@ const BookingRequestPopup: React.FC = () => {
     console.log('Manually dismissing booking notification');
     dismissNotification();
   };
+  
+  // Handle accept booking and navigate to appropriate screen
+  const handleAcceptBooking = async () => {
+    if (isLoading) return;
+    
+    try {
+      const bookingData = await acceptBooking(activeBookingRequest._id);
+      console.log('Booking accepted:', bookingData);
+      
+      // Extract user ID safely
+      const userId = typeof activeBookingRequest.userId === 'object' ? 
+        activeBookingRequest.userId._id : activeBookingRequest.userId;
+      
+      // Store booking data for use in consultation screens
+      try {
+        await AsyncStorage.setItem('currentBookingData', JSON.stringify({
+          bookingId: activeBookingRequest._id,
+          userId: userId,
+          consultationType: activeBookingRequest.consultationType
+        }));
+      } catch (error) {
+        console.error('Error storing booking data:', error);
+      }
+      
+      let chatId = bookingData?.chatId || null;
+      
+      // For chat consultations, try to create a chat automatically
+      if (activeBookingRequest.consultationType === 'chat') {
+        try {
+          console.log('Creating chat for booking:', activeBookingRequest._id);
+          
+          // Try to create or get existing chat
+          const chatResult = await chatService.createChatForBooking(
+            activeBookingRequest._id, 
+            userId as string
+          );
+          
+          console.log('Chat creation result:', JSON.stringify(chatResult));
+          
+          if (chatResult) {
+            if (chatResult._id) {
+              console.log('Chat created successfully with ID:', chatResult._id);
+              chatId = chatResult._id;
+            } else if (chatResult.chatId) {
+              console.log('Chat created successfully with chatId:', chatResult.chatId);
+              chatId = chatResult.chatId;
+            } else if (chatResult.chat && chatResult.chat._id) {
+              console.log('Chat created successfully with chat._id:', chatResult.chat._id);
+              chatId = chatResult.chat._id;
+            }
+          }
+          
+          if (!chatId) {
+            console.log('No chat ID found in response, using booking ID as fallback');
+            chatId = activeBookingRequest._id;
+          }
+        } catch (chatError) {
+          console.error('Failed to create chat:', chatError);
+          // We'll still navigate to chat screen, where they can retry
+          chatId = activeBookingRequest._id; // Use booking ID as fallback
+        }
+      }
+      
+      // Navigate to appropriate screen based on consultation type
+      setTimeout(() => {
+        dismissNotification();
+        
+        // Navigate based on consultation type
+        switch (activeBookingRequest.consultationType) {
+          case 'chat':
+            // Always pass both chatId and bookingId to ensure chat creation works
+            navigation.navigate('Chat', { 
+              chatId: chatId, 
+              bookingId: activeBookingRequest._id 
+            });
+            break;
+            
+          case 'call':
+            // For voice call - use the 'Call' route from RootStackParamList
+            navigation.navigate('Call', { 
+              bookingId: activeBookingRequest._id 
+            });
+            break;
+            
+          case 'video':
+            // For video call - use the 'VideoCall' route from RootStackParamList
+            navigation.navigate('VideoCall', { 
+              bookingId: activeBookingRequest._id 
+            });
+            break;
+            
+          default:
+            console.error('Unknown consultation type:', activeBookingRequest.consultationType);
+            break;
+        }
+      }, 500);
+    } catch (error) {
+      console.error('Error accepting booking:', error);
+    }
+  };
+
+  // Get user info safely
+  const getUserName = () => {
+    if (typeof activeBookingRequest.userId === 'object' && activeBookingRequest.userId !== null) {
+      return activeBookingRequest.userId.name || 'User';
+    }
+    return 'User';
+  };
+  
+  const getUserMobileNumber = () => {
+    if (typeof activeBookingRequest.userId === 'object' && activeBookingRequest.userId !== null) {
+      // @ts-ignore - mobileNumber might not be in the type definition but could exist in the data
+      return activeBookingRequest.userId.mobileNumber || '';
+    }
+    return '';
+  };
+  
+  const getUserNotes = () => {
+    // @ts-ignore - notes property might not be in the type definition but could exist in the data
+    return activeBookingRequest.notes || '';
+  };
+  
+  const hasNotes = () => {
+    // @ts-ignore - notes property might not be in the type definition but could exist in the data
+    return !!activeBookingRequest.notes;
+  };
 
   return (
     <Modal
@@ -137,9 +271,9 @@ const BookingRequestPopup: React.FC = () => {
               />
             </View>
             <View style={styles.userDetails}>
-              <Text style={styles.userName}>{activeBookingRequest.userId.name}</Text>
+              <Text style={styles.userName}>{getUserName()}</Text>
               <Text style={styles.userPhone}>
-                <Ionicons name="call-outline" size={14} color="#666" /> {activeBookingRequest.userId.mobileNumber}
+                <Ionicons name="call-outline" size={14} color="#666" /> {getUserMobileNumber()}
               </Text>
               <Text style={styles.timestamp}>
                 <Ionicons name="time-outline" size={14} color="#666" /> Requested at {formatTime(activeBookingRequest.createdAt)}
@@ -154,10 +288,10 @@ const BookingRequestPopup: React.FC = () => {
           </View>
 
           {/* Notes */}
-          {activeBookingRequest.notes && (
+          {hasNotes() && (
             <View style={styles.notesContainer}>
               <Text style={styles.notesLabel}>User's Notes:</Text>
-              <Text style={styles.notes}>{activeBookingRequest.notes}</Text>
+              <Text style={styles.notes}>{getUserNotes()}</Text>
             </View>
           )}
 
@@ -177,7 +311,7 @@ const BookingRequestPopup: React.FC = () => {
                 </TouchableOpacity>
                 <TouchableOpacity 
                   style={[styles.button, styles.acceptButton]}
-                  onPress={() => acceptBooking(activeBookingRequest._id)}
+                  onPress={handleAcceptBooking}
                   disabled={isLoading}
                 >
                   <Ionicons name="checkmark" size={20} color="#fff" />

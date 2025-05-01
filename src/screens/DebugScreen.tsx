@@ -1,8 +1,55 @@
 import React, { useState, useEffect } from 'react';
-import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator } from 'react-native';
+import { View, Text, StyleSheet, ScrollView, TouchableOpacity, Alert, ActivityIndicator, Button } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { connectSocket, isSocketConnected, testBookingNotification, runDiagnostics } from '../services/socketService';
 import SocketDiagnostics from '../components/SocketDiagnostics';
+import { styled } from 'nativewind';
+
+// Styled components
+const StyledView = styled(View);
+const StyledText = styled(Text);
+const StyledScrollView = styled(ScrollView);
+
+const TokenDisplayComponent = () => {
+  const [tokenValue, setTokenValue] = useState('');
+
+  const getToken = async () => {
+    try {
+      const token = await AsyncStorage.getItem('token');
+      if (token) {
+        setTokenValue(token);
+        console.log('Token found:', token);
+      } else {
+        setTokenValue('No token found');
+        console.log('No token found');
+      }
+    } catch (error) {
+      console.error('Error getting token:', error);
+      setTokenValue('Error retrieving token');
+    }
+  };
+
+  return (
+    <View style={styles.section}>
+      <Text style={styles.sectionTitle}>JWT Token</Text>
+      <View style={styles.buttonRow}>
+        <TouchableOpacity
+          style={styles.button}
+          onPress={getToken}
+        >
+          <Text style={styles.buttonText}>Show JWT Token</Text>
+        </TouchableOpacity>
+      </View>
+      
+      {tokenValue ? (
+        <View style={styles.dataContainer}>
+          <Text style={styles.subtitle}>Token:</Text>
+          <Text style={styles.dataValue} selectable>{tokenValue}</Text>
+        </View>
+      ) : null}
+    </View>
+  );
+};
 
 const DebugScreen = () => {
   const [asyncStorageData, setAsyncStorageData] = useState<any>(null);
@@ -10,6 +57,7 @@ const DebugScreen = () => {
   const [loading, setLoading] = useState(false);
   const [connected, setConnected] = useState(false);
   const [astrologerInfo, setAstrologerInfo] = useState<any>(null);
+  const [token, setToken] = useState('');
 
   useEffect(() => {
     // Initial check of socket connection
@@ -281,108 +329,126 @@ const DebugScreen = () => {
     }
   };
 
+  const displayToken = async () => {
+    try {
+      const storedToken = await AsyncStorage.getItem('token');
+      if (storedToken) {
+        setToken(storedToken);
+        console.log('JWT Token:', storedToken);
+      } else {
+        setToken('No token found');
+        console.log('No token found in AsyncStorage');
+      }
+    } catch (error) {
+      console.error('Error getting token:', error);
+      setToken('Error getting token');
+    }
+  };
+
   return (
-    <ScrollView style={styles.container}>
-      <Text style={styles.title}>Debug Tools</Text>
+    <StyledView className="flex-1 bg-white p-4">
+      <StyledText className="text-lg font-bold mb-4">Debug Tools</StyledText>
       
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Socket Connection</Text>
-        <View style={styles.buttonRow}>
+      <TokenDisplayComponent />
+      
+      <StyledView className="section">
+        <StyledText className="sectionTitle">Socket Connection</StyledText>
+        <StyledView className="buttonRow">
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
+            className={[loading && 'buttonDisabled']}
             onPress={testSocketConnection}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Test Connection</Text>
+            <StyledText className="buttonText">Test Connection</StyledText>
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
+            className={[loading && 'buttonDisabled']}
             onPress={runSocketDiagnostics}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Run Diagnostics</Text>
+            <StyledText className="buttonText">Run Diagnostics</StyledText>
           </TouchableOpacity>
-        </View>
+        </StyledView>
         
-        <View style={styles.statusContainer}>
-          <Text style={styles.statusLabel}>Socket Connected:</Text>
-          <Text style={[
-            styles.statusValue,
-            connected ? styles.successText : styles.errorText
+        <StyledView className="statusContainer">
+          <StyledText className="statusLabel">Socket Connected:</StyledText>
+          <StyledText className={[
+            'statusValue',
+            connected ? 'successText' : 'errorText'
           ]}>
             {connected ? 'Yes' : 'No'}
-          </Text>
-        </View>
-      </View>
+          </StyledText>
+        </StyledView>
+      </StyledView>
       
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Astrologer Profile</Text>
-        <View style={styles.buttonRow}>
+      <StyledView className="section">
+        <StyledText className="sectionTitle">Astrologer Profile</StyledText>
+        <StyledView className="buttonRow">
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
+            className={[loading && 'buttonDisabled']}
             onPress={checkAstrologerProfile}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Check ID</Text>
+            <StyledText className="buttonText">Check ID</StyledText>
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={[styles.button, styles.warningButton, loading && styles.buttonDisabled]}
+            className={[styles.warningButton, loading && 'buttonDisabled']}
             onPress={fixAstrologerId}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Fix Astro Uttam ID</Text>
+            <StyledText className="buttonText">Fix Astro Uttam ID</StyledText>
           </TouchableOpacity>
-        </View>
+        </StyledView>
         
         {astrologerInfo && (
-          <View style={styles.dataContainer}>
-            <Text style={styles.subtitle}>Socket Identifier:</Text>
-            <Text style={[
-              styles.statusValue,
-              astrologerInfo.socketIdentifier ? styles.successText : styles.errorText
+          <StyledView className="dataContainer">
+            <StyledText className="subtitle">Socket Identifier:</StyledText>
+            <StyledText className={[
+              'statusValue',
+              astrologerInfo.socketIdentifier ? 'successText' : 'errorText'
             ]}>
               {astrologerInfo.socketIdentifier || 'Not Found'}
-            </Text>
-          </View>
+            </StyledText>
+          </StyledView>
         )}
-      </View>
+      </StyledView>
       
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Notification Testing</Text>
-        <View style={styles.buttonRow}>
+      <StyledView className="section">
+        <StyledText className="sectionTitle">Notification Testing</StyledText>
+        <StyledView className="buttonRow">
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
+            className={[loading && 'buttonDisabled']}
             onPress={testNotification}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Test Local Notification</Text>
+            <StyledText className="buttonText">Test Local Notification</StyledText>
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
+            className={[loading && 'buttonDisabled']}
             onPress={triggerManualSocketTest}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Request Server Test</Text>
+            <StyledText className="buttonText">Request Server Test</StyledText>
           </TouchableOpacity>
-        </View>
-      </View>
+        </StyledView>
+      </StyledView>
 
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>AsyncStorage</Text>
-        <View style={styles.buttonRow}>
+      <StyledView className="section">
+        <StyledText className="sectionTitle">AsyncStorage</StyledText>
+        <StyledView className="buttonRow">
           <TouchableOpacity
-            style={[styles.button, loading && styles.buttonDisabled]}
+            className={[loading && 'buttonDisabled']}
             onPress={checkAsyncStorage}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>View Storage</Text>
+            <StyledText className="buttonText">View Storage</StyledText>
           </TouchableOpacity>
           
           <TouchableOpacity
-            style={[styles.button, styles.dangerButton, loading && styles.buttonDisabled]}
+            className={[styles.dangerButton, loading && 'buttonDisabled']}
             onPress={() => {
               Alert.alert(
                 'Confirm',
@@ -395,64 +461,64 @@ const DebugScreen = () => {
             }}
             disabled={loading}
           >
-            <Text style={styles.buttonText}>Clear Storage</Text>
+            <StyledText className="buttonText">Clear Storage</StyledText>
           </TouchableOpacity>
-        </View>
+        </StyledView>
         
         {asyncStorageData && (
-          <View style={styles.dataContainer}>
-            <Text style={styles.subtitle}>Storage Contents:</Text>
+          <StyledView className="dataContainer">
+            <StyledText className="subtitle">Storage Contents:</StyledText>
             {Object.entries(asyncStorageData).map(([key, value]) => (
-              <View key={key} style={styles.dataItem}>
-                <Text style={styles.dataKey}>{key}:</Text>
-                <Text style={styles.dataValue}>
+              <StyledView key={key} className="dataItem">
+                <StyledText className="dataKey">{key}:</StyledText>
+                <StyledText className="dataValue">
                   {typeof value === 'object' ? JSON.stringify(value, null, 2) : String(value)}
-                </Text>
-              </View>
+                </StyledText>
+              </StyledView>
             ))}
-          </View>
+          </StyledView>
         )}
-      </View>
+      </StyledView>
       
       {diagnosticResult && (
-        <View style={styles.section}>
-          <Text style={styles.sectionTitle}>Diagnostic Results</Text>
-          <View style={styles.dataContainer}>
-            <Text style={styles.subtitle}>
+        <StyledView className="section">
+          <StyledText className="sectionTitle">Diagnostic Results</StyledText>
+          <StyledView className="dataContainer">
+            <StyledText className="subtitle">
               Connection Status: 
-              <Text style={diagnosticResult.success ? styles.successText : styles.errorText}>
+              <StyledText className={[diagnosticResult.success ? 'successText' : 'errorText']}>
                 {' '}{diagnosticResult.success ? 'SUCCESS' : 'FAILED'}
-              </Text>
-            </Text>
+              </StyledText>
+            </StyledText>
             
             {diagnosticResult.recommendations && diagnosticResult.recommendations.length > 0 && (
               <>
-                <Text style={styles.subtitle}>Recommendations:</Text>
+                <StyledText className="subtitle">Recommendations:</StyledText>
                 {diagnosticResult.recommendations.map((rec: string, i: number) => (
-                  <Text key={i} style={styles.recommendationText}>• {rec}</Text>
+                  <StyledText key={i} className="recommendationText">• {rec}</StyledText>
                 ))}
               </>
             )}
             
-            <Text style={styles.subtitle}>Connection Info:</Text>
-            <Text style={styles.dataValue}>
+            <StyledText className="subtitle">Connection Info:</StyledText>
+            <StyledText className="dataValue">
               {JSON.stringify(diagnosticResult.connectionInfo, null, 2)}
-            </Text>
-          </View>
-        </View>
+            </StyledText>
+          </StyledView>
+        </StyledView>
       )}
       
-      <View style={styles.section}>
-        <Text style={styles.sectionTitle}>Advanced Diagnostics</Text>
+      <StyledView className="section">
+        <StyledText className="sectionTitle">Advanced Diagnostics</StyledText>
         <SocketDiagnostics />
-      </View>
+      </StyledView>
       
       {loading && (
-        <View style={styles.loadingOverlay}>
+        <StyledView className="loadingOverlay">
           <ActivityIndicator size="large" color="#6366F1" />
-        </View>
+        </StyledView>
       )}
-    </ScrollView>
+    </StyledView>
   );
 };
 

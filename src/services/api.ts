@@ -2,6 +2,7 @@ import axios from 'axios';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { Platform } from 'react-native';
 import { API_URL, APP_IDENTIFIER, API_PORT, LOCAL_IP } from '../config';
+import { API_ENDPOINTS } from '../config';
 
 // Add more detailed logging for API calls to debug the endpoints
 const isDev = __DEV__;
@@ -11,7 +12,29 @@ if (isDev) {
   console.log('API Service Initializing with URL:', API_URL);
   console.log('App Identifier:', APP_IDENTIFIER);
   console.log('Platform:', Platform.OS);
+  
+  // Check if API_URL already has /api at the end
+  if (API_URL.endsWith('/api')) {
+    console.warn('WARNING: API_URL already ends with /api - this could cause duplicate /api in endpoints');
+  }
 }
+
+// Helper to ensure URLs don't have duplicate /api prefixes
+const normalizeUrl = (url: string): string => {
+  if (!url) return url;
+  
+  // If the API_URL already ends with /api and the URL starts with /api, remove the duplicate
+  if (API_URL.endsWith('/api') && url.startsWith('/api')) {
+    return url.substring(4); // Remove the leading /api
+  }
+  
+  // If URL doesn't start with /, add it
+  if (!url.startsWith('/')) {
+    return `/${url}`;
+  }
+  
+  return url;
+};
 
 const api = axios.create({
   baseURL: API_URL,
@@ -23,6 +46,64 @@ const api = axios.create({
     'X-App-Platform': Platform.OS // Add platform info
   },
 });
+
+// Add a request interceptor to normalize URL paths
+api.interceptors.request.use(
+  async (config) => {
+    // Normalize URL to prevent duplicate /api prefixes
+    if (config.url) {
+      config.url = normalizeUrl(config.url);
+    }
+    return config;
+  },
+  (error) => {
+    return Promise.reject(error);
+  },
+  { runWhen: (config) => Boolean(config.url) }
+);
+
+// Helper function to extract the correct astrologer ID
+const getStoredAstrologerId = async (): Promise<string | null> => {
+  try {
+    // First try to get from profile in AsyncStorage
+    const astrologerProfileString = await AsyncStorage.getItem('astrologerProfile');
+    if (astrologerProfileString) {
+      const profile = JSON.parse(astrologerProfileString);
+      if (profile && profile._id) {
+        return profile._id;
+      }
+    }
+
+    // Then try from direct astrologerId storage
+    const directId = await AsyncStorage.getItem('astrologerId');
+    if (directId) {
+      return directId;
+    }
+
+    // Then try from userData
+    const userDataString = await AsyncStorage.getItem('userData');
+    if (userDataString) {
+      const userData = JSON.parse(userDataString);
+      if (userData && (userData.astrologerId || userData._id || userData.id)) {
+        return userData.astrologerId || userData._id || userData.id;
+      }
+    }
+
+    // Finally try from user
+    const userString = await AsyncStorage.getItem('user');
+    if (userString) {
+      const user = JSON.parse(userString);
+      if (user && (user.astrologerId || user._id || user.id)) {
+        return user.astrologerId || user._id || user.id;
+      }
+    }
+
+    return null;
+  } catch (err) {
+    console.error('Error getting astrologer ID:', err);
+    return null;
+  }
+};
 
 // Add a request interceptor to add the auth token to requests
 api.interceptors.request.use(
@@ -61,6 +142,45 @@ api.interceptors.request.use(
         config.headers.Authorization = `Bearer ${token}`;
       } else if (isDev) {
         console.log('No auth token available for request');
+      }
+
+      // Add astrologer ID to requests to help backend identify the correct user
+      // This is particularly important for chat and booking operations
+      const astrologerId = await getStoredAstrologerId();
+      if (astrologerId) {
+        // Always add the astrologer ID to headers for all requests
+        config.headers['X-Astrologer-ID'] = astrologerId;
+        config.headers['X-App-Identifier'] = APP_IDENTIFIER;
+        
+        // For chat-specific endpoints, add even more ID headers
+        if (config.url?.includes('/chat') || config.url?.includes('/messages') || config.url?.includes('/booking')) {
+          console.log(`Adding astrologer ID ${astrologerId} to request headers for chat/booking operation`);
+          config.headers['X-User-ID'] = astrologerId;
+          config.headers['X-Sender-ID'] = astrologerId;
+          
+          // If this is a POST request to send a message, add ID to the body as well
+          if (config.method?.toLowerCase() === 'post' && 
+              (config.url?.includes('/messages') || config.url?.includes('/send'))) {
+            // Ensure data is an object
+            if (!config.data) {
+              config.data = {};
+            } else if (typeof config.data === 'string') {
+              try {
+                config.data = JSON.parse(config.data);
+              } catch (e) {
+                console.error('Error parsing request data as JSON:', e);
+              }
+            }
+            
+            // Add ID to the data if it's an object
+            if (typeof config.data === 'object') {
+              config.data.senderId = astrologerId;
+              config.data.astrologerId = astrologerId;
+            }
+          }
+        }
+      } else {
+        console.warn('No astrologer ID available for request headers');
       }
     } catch (error) {
       console.error('Error setting auth token:', error);
@@ -250,6 +370,44 @@ export const getCurrentUser = async () => {
   } catch (error) {
     console.error('Get current user error:', error);
     throw error;
+  }
+};
+
+// Profile service for astrologer profile operations
+export const profileService = {
+  // Get astrologer profile
+  getProfile: async () => {
+    try {
+      // Try the primary endpoint first
+      const response = await api.get(API_ENDPOINTS.PROFILE[0]);
+      
+      if (response.data && response.data.success) {
+        console.log('Profile successfully retrieved');
+        return response.data.data;
+      } else {
+        throw new Error('Invalid response format');
+      }
+    } catch (error) {
+      console.error('Error getting profile:', error);
+      throw error;
+    }
+  },
+  
+  // Update astrologer profile
+  updateProfile: async (profileData: any) => {
+    try {
+      const response = await api.put(API_ENDPOINTS.PROFILE[0], profileData);
+      
+      if (response.data && response.data.success) {
+        console.log('Profile successfully updated');
+        return response.data.data;
+      } else {
+        throw new Error('Invalid response format');
+      }
+    } catch (error) {
+      console.error('Error updating profile:', error);
+      throw error;
+    }
   }
 };
 

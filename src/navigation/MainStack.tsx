@@ -7,6 +7,8 @@ import { TabNavigator } from './TabNavigator';
 import ConsultationsScreen from '../screens/ConsultationsScreen';
 import EarningsScreen from '../screens/EarningsScreen';
 import SettingsScreen from '../screens/SettingsScreen';
+import ChatScreen from '../screens/ChatScreen';
+import BookingRequestsScreen from '../screens/BookingRequestsScreen';
 
 const Stack = createNativeStackNavigator<MainStackParamList>();
 
@@ -21,6 +23,16 @@ export const MainStack = () => {
       <Stack.Screen name="Consultations" component={ConsultationsScreen} />
       <Stack.Screen name="Earnings" component={EarningsScreen} />
       <Stack.Screen name="Settings" component={SettingsScreen} />
+      <Stack.Screen name="BookingRequests" component={BookingRequestsScreen} />
+      <Stack.Screen 
+        name="Chat" 
+        component={ChatScreen}
+        options={{
+          headerShown: true,
+          headerTitle: 'Chat with User',
+          headerTitleAlign: 'center',
+        }} 
+      />
     </Stack.Navigator>
   );
 }; 

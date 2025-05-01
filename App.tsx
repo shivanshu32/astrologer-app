@@ -1,3 +1,4 @@
+import 'react-native-get-random-values';
 import React, { useState, useEffect } from 'react';
 import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
@@ -9,6 +10,7 @@ import { View as RNView, Text as RNText, ActivityIndicator as RNActivityIndicato
 import { styled } from 'nativewind';
 import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { BookingNotificationProvider } from './src/contexts/BookingNotificationContext';
+import { ChatsProvider } from './src/contexts/ChatsContext';
 import BookingRequestPopup from './src/components/BookingRequestPopup';
 
 // Styled components
@@ -22,6 +24,7 @@ let LoginScreen: React.ComponentType<any>,
     HomeScreen: React.ComponentType<any>, 
     ProfileScreen: React.ComponentType<any>, 
     ChatScreen: React.ComponentType<any>, 
+    ChatsScreen: React.ComponentType<any>, 
     BookingsScreen: React.ComponentType<any>, 
     CallScreen: React.ComponentType<any>, 
     VideoCallScreen: React.ComponentType<any>,
@@ -42,15 +45,13 @@ try {
   ConsultationsScreen = require('./src/screens/ConsultationsScreen').default;
   DebugScreen = require('./src/screens/DebugScreen').default;
   
+  // Chat screens
+  ChatScreen = require('./src/screens/ChatScreen').default;
+  ChatsScreen = require('./src/screens/ChatsScreen').default;
+  
   // Additional screens
   VideoCallScreen = require('./src/screens/VideoCallScreen').default;
-  
-  // These may not exist yet, so handle separately
-  try { ChatScreen = require('./src/screens/ChatScreen').default; } 
-  catch (e) { ChatScreen = () => <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Text>Chat Screen (Under Development)</Text></View>; }
-  
-  try { CallScreen = require('./src/screens/CallScreen').default; } 
-  catch (e) { CallScreen = () => <View style={{flex: 1, justifyContent: 'center', alignItems: 'center'}}><Text>Call Screen (Under Development)</Text></View>; }
+  CallScreen = require('./src/screens/CallScreen').default;
 } catch (err) {
   console.error('Error loading screens:', err);
   // Create placeholder components if imports fail
@@ -66,6 +67,7 @@ try {
   HomeScreen = () => <PlaceholderScreen screenName="Home Screen" />;
   ProfileScreen = () => <PlaceholderScreen screenName="Profile Screen" />;
   ChatScreen = () => <PlaceholderScreen screenName="Chat Screen" />;
+  ChatsScreen = () => <PlaceholderScreen screenName="Chats Screen" />;
   BookingsScreen = () => <PlaceholderScreen screenName="Bookings Screen" />;
   CallScreen = () => <PlaceholderScreen screenName="Call Screen" />;
   VideoCallScreen = () => <PlaceholderScreen screenName="Video Call Screen" />;
@@ -88,7 +90,7 @@ function TabNavigator() {
 
           if (route.name === 'Home') {
             iconName = focused ? 'home' : 'home-outline';
-          } else if (route.name === 'Chat') {
+          } else if (route.name === 'Chats') {
             iconName = focused ? 'chatbubbles' : 'chatbubbles-outline';
           } else if (route.name === 'Bookings') {
             iconName = focused ? 'calendar' : 'calendar-outline';
@@ -102,21 +104,63 @@ function TabNavigator() {
         },
         tabBarActiveTintColor: '#f97316',
         tabBarInactiveTintColor: 'gray',
-        headerShown: false,
+        headerShown: true,
+        headerTitleStyle: {
+          fontWeight: '600',
+        },
       })}
     >
-      <Tab.Screen name="Home" component={HomeScreen} />
-      <Tab.Screen name="Chat" component={ChatScreen} />
-      <Tab.Screen name="Bookings" component={BookingsScreen} />
-      <Tab.Screen name="Profile" component={ProfileScreen} />
-      <Tab.Screen name="Debug" component={DebugScreen} />
+      <Tab.Screen 
+        name="Home" 
+        component={HomeScreen}
+        options={{ title: 'Home' }}
+      />
+      <Tab.Screen 
+        name="Chats" 
+        component={ChatsScreen}
+        options={{ title: 'Messages' }}
+      />
+      <Tab.Screen 
+        name="Bookings" 
+        component={BookingsScreen}
+        options={{ title: 'Bookings' }}
+      />
+      <Tab.Screen 
+        name="Profile" 
+        component={ProfileScreen}
+        options={{ title: 'Profile' }}
+      />
+      <Tab.Screen 
+        name="Debug" 
+        component={DebugScreen}
+        options={{ title: 'Debug' }}
+      />
     </Tab.Navigator>
   );
 }
 
+// Add this temporary function to debug token
+const debugToken = async () => {
+  try {
+    const token = await AsyncStorage.getItem('token');
+    console.log('========== JWT TOKEN ==========');
+    console.log(token);
+    console.log('===============================');
+  } catch (error) {
+    console.error('Error getting token:', error);
+  }
+};
+
 // Main App Content Component
 function AppContent() {
   const { isAuthenticated, loading } = useAuth();
+  
+  // Call the debug function when app loads if user is authenticated
+  useEffect(() => {
+    if (isAuthenticated) {
+      debugToken();
+    }
+  }, [isAuthenticated]);
   
   console.log('AppContent rendering - Auth state:', { isAuthenticated, loading });
   
@@ -137,17 +181,59 @@ function AppContent() {
       <Stack.Navigator 
         initialRouteName={initialRoute}
         screenOptions={{ 
-          headerShown: false,
-          animation: 'slide_from_right'
+          headerShown: true,
+          animation: 'slide_from_right',
+          headerTitleStyle: {
+            fontWeight: '600',
+          },
+          headerBackTitleVisible: false,
         }}
       >
-        <Stack.Screen name="Login" component={LoginScreen} />
-        <Stack.Screen name="OTP" component={OTPScreen} />
-        <Stack.Screen name="Main" component={TabNavigator} />
-        <Stack.Screen name="VoiceCallSession" component={CallScreen} />
-        <Stack.Screen name="VideoCallSession" component={VideoCallScreen} />
-        <Stack.Screen name="BookingRequestsTab" component={BookingRequestsScreen} />
-        <Stack.Screen name="Consultations" component={ConsultationsScreen} />
+        <Stack.Screen 
+          name="Login" 
+          component={LoginScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen 
+          name="OTP" 
+          component={OTPScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen 
+          name="Main" 
+          component={TabNavigator}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen 
+          name="Chat" 
+          component={ChatScreen}
+          options={{ 
+            headerShown: true,
+            headerTitle: '',
+            headerShadowVisible: false,
+            headerStyle: {
+              backgroundColor: '#F5F5F5'
+            }
+          }}
+        />
+        <Stack.Screen 
+          name="VoiceCallSession" 
+          component={CallScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen 
+          name="VideoCallSession" 
+          component={VideoCallScreen}
+          options={{ headerShown: false }}
+        />
+        <Stack.Screen 
+          name="BookingRequestsTab" 
+          component={BookingRequestsScreen}
+        />
+        <Stack.Screen 
+          name="Consultations" 
+          component={ConsultationsScreen}
+        />
       </Stack.Navigator>
       
       {/* Render the booking request popup when authenticated */}
@@ -161,7 +247,9 @@ export default function App() {
   return (
     <BookingNotificationProvider>
       <AuthProvider>
-        <AppContent />
+        <ChatsProvider>
+          <AppContent />
+        </ChatsProvider>
       </AuthProvider>
     </BookingNotificationProvider>
   );
