@@ -131,6 +131,34 @@ const ChatsScreen = () => {
     );
   };
 
+  // Add a debug function to log chat details
+  const debugChatsList = async () => {
+    console.log("Manually debugging chat retrieval...");
+    try {
+      setLoading(true);
+      const data = await chatService.getAstrologerChats();
+      console.log(`Received ${data.length} chats from service`);
+      
+      if (data.length > 0) {
+        // Log the first chat details for debugging
+        console.log("First chat details:", {
+          id: data[0]._id,
+          user: data[0].user?.name,
+          messageCount: data[0].messages?.length || 0,
+          bookingId: data[0].booking?._id
+        });
+      } else {
+        console.log("No chats found in response");
+      }
+      
+      setChats(data);
+      setLoading(false);
+    } catch (err: any) {
+      console.error("Error in debug function:", err.message);
+      setLoading(false);
+    }
+  };
+
   if (loading && !refreshing) {
     return (
       <View style={styles.centered}>
@@ -156,6 +184,11 @@ const ChatsScreen = () => {
         <View style={styles.centered}>
           <Ionicons name="chatbubbles-outline" size={64} color="#666" />
           <Text style={styles.noChatsText}>No active chats</Text>
+          
+          {/* Add a manual refresh button for testing */}
+          <TouchableOpacity style={styles.debugButton} onPress={debugChatsList}>
+            <Text style={styles.debugButtonText}>Refresh Chats</Text>
+          </TouchableOpacity>
         </View>
       ) : (
         <FlatList
@@ -251,22 +284,21 @@ const styles = StyleSheet.create({
   },
   chatPreview: {
     flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center'
+    justifyContent: 'space-between'
   },
   lastMessage: {
-    flex: 1,
     fontSize: 14,
     color: '#666666',
+    flex: 1,
     marginRight: 8
   },
   consultationType: {
     fontSize: 12,
     color: '#0066FF',
-    backgroundColor: '#E5F1FF',
+    backgroundColor: '#E5F0FF',
     paddingHorizontal: 8,
-    paddingVertical: 4,
-    borderRadius: 12
+    paddingVertical: 2,
+    borderRadius: 4
   },
   errorText: {
     color: '#FF3B30',
@@ -288,6 +320,17 @@ const styles = StyleSheet.create({
     fontSize: 16,
     color: '#666666',
     textAlign: 'center'
+  },
+  debugButton: {
+    backgroundColor: '#0066FF',
+    paddingHorizontal: 24,
+    paddingVertical: 12,
+    borderRadius: 8,
+    marginTop: 16
+  },
+  debugButtonText: {
+    color: '#FFFFFF',
+    fontWeight: '600'
   }
 });
 

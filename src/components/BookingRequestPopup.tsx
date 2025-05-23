@@ -18,6 +18,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/navigation';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 import { chatService } from '../services/chatService';
+import * as socketService from '../services/socketService';
 
 const { width } = Dimensions.get('window');
 
@@ -113,7 +114,13 @@ const BookingRequestPopup: React.FC = () => {
         console.error('Error storing booking data:', error);
       }
       
-      let chatId = bookingData?.chatId || null;
+      // Initialize chatId variable to store the chat ID when we create or get a chat
+      let chatId: string | null = null;
+      
+      // Check if we already have a chat ID in the booking data
+      if (bookingData && 'chatId' in bookingData && bookingData.chatId) {
+        chatId = bookingData.chatId as string;
+      }
       
       // For chat consultations, try to create a chat automatically
       if (activeBookingRequest.consultationType === 'chat') {
@@ -129,15 +136,22 @@ const BookingRequestPopup: React.FC = () => {
           console.log('Chat creation result:', JSON.stringify(chatResult));
           
           if (chatResult) {
+            // Enhanced chat ID extraction with more possible locations
             if (chatResult._id) {
               console.log('Chat created successfully with ID:', chatResult._id);
               chatId = chatResult._id;
+            } else if (chatResult.data && chatResult.data._id) {
+              console.log('Chat created successfully with data._id:', chatResult.data._id);
+              chatId = chatResult.data._id;
             } else if (chatResult.chatId) {
               console.log('Chat created successfully with chatId:', chatResult.chatId);
               chatId = chatResult.chatId;
             } else if (chatResult.chat && chatResult.chat._id) {
               console.log('Chat created successfully with chat._id:', chatResult.chat._id);
               chatId = chatResult.chat._id;
+            } else if (chatResult.data && chatResult.data.chat && chatResult.data.chat._id) {
+              console.log('Chat created successfully with data.chat._id:', chatResult.data.chat._id);
+              chatId = chatResult.data.chat._id;
             }
           }
           
@@ -152,6 +166,56 @@ const BookingRequestPopup: React.FC = () => {
         }
       }
       
+      // For chat consultations, try to join the chat room before navigating
+      if (activeBookingRequest.consultationType === 'chat') {
+        try {
+          console.log('Pre-joining chat room before navigation...');
+          
+          // Use the enhanced join function with progress reporting
+          console.log(`Attempting to pre-join chat room with chatId: ${chatId || 'none'} and bookingId: ${activeBookingRequest._id}`);
+          
+          // Call enhanced join with a shorter timeout to avoid blocking navigation
+          const joinResult = await socketService.enhancedJoinChatRoom(
+            chatId || '', 
+            activeBookingRequest._id,
+            {
+              timeout: 3000, // Short timeout for pre-join
+              onProgress: (status: string) => {
+                console.log(`Pre-join progress: ${status}`);
+              }
+            }
+          );
+          
+          if (joinResult.success) {
+            console.log('Successfully pre-joined chat room:', joinResult);
+          } else {
+            console.warn('Pre-join attempt result:', joinResult.error);
+            // We'll retry in the chat screen, so this is not critical
+          }
+          
+          // Start a background retry if the first attempt failed
+          if (!joinResult.success) {
+            console.log('Starting background retry for chat room join...');
+            // Don't await this - let it run in background
+            setTimeout(() => {
+              socketService.enhancedJoinChatRoom(chatId || '', activeBookingRequest._id, {
+                timeout: 10000, // Longer timeout for background retry
+                retryCount: 2
+              })
+                .then((retryResult) => {
+                  console.log('Background join retry result:', retryResult);
+                })
+                .catch((retryError: Error) => {
+                  console.warn('Background join retry failed:', retryError);
+                });
+            }, 1000); // Delay the retry by 1 second
+          }
+        } catch (preJoinError) {
+          console.warn('Error in pre-join attempt:', preJoinError);
+          // Continue with navigation regardless
+        }
+      }
+      
       // Navigate to appropriate screen based on consultation type
       setTimeout(() => {
         dismissNotification();
@@ -161,7 +225,7 @@ const BookingRequestPopup: React.FC = () => {
           case 'chat':
             // Always pass both chatId and bookingId to ensure chat creation works
             navigation.navigate('Chat', { 
-              chatId: chatId, 
+              chatId: chatId || '', // Use empty string if chatId is null
               bookingId: activeBookingRequest._id 
             });
             break;

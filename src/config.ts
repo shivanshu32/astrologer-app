@@ -45,9 +45,13 @@ export const API_URL = (() => {
     baseUrl = LOCAL_NETWORK_API_URL;
   }
 
-  // Normalize the baseUrl to ensure it doesn't have duplicate /api
-  if (baseUrl.endsWith('/api/api')) {
-    baseUrl = baseUrl.slice(0, -4); // Remove duplicate /api
+  // Normalize the baseUrl to ensure it has exactly one /api suffix
+  // First remove any duplicate /api/api patterns
+  baseUrl = baseUrl.replace(/\/api\/api/g, '/api');
+  
+  // Then ensure it ends with exactly one /api
+  if (!baseUrl.endsWith('/api')) {
+    baseUrl = `${baseUrl}${baseUrl.endsWith('/') ? 'api' : '/api'}`;
   }
 
   return baseUrl;
@@ -87,6 +91,20 @@ if (__DEV__) {
 // App identifier - consistent across the app
 export const APP_IDENTIFIER = 'astrologer-app';
 
+// Socket URL configuration - derived from API_URL
+export const SOCKET_URL = (() => {
+  // Remove /api from API_URL to get the base server URL
+  const baseServerUrl = API_URL.endsWith('/api')
+    ? API_URL.slice(0, -4) // Remove /api suffix
+    : API_URL.replace('/api/', '/'); // Replace /api/ with /
+    
+  console.log(`🔌 Socket URL: ${baseServerUrl}`);
+  return baseServerUrl;
+})();
+
+// For local network testing with actual devices
+export const LOCAL_NETWORK_SOCKET_URL = `http://${LOCAL_IP}:${API_PORT}`;
+
 // Agora settings
 export const AGORA = {
   APP_ID: '25b98d94bee34f4eaac05a5e46a733ba',
@@ -95,21 +113,25 @@ export const AGORA = {
 
 // API endpoints for consultation-related functionality
 export const API_ENDPOINTS = {
-  // Auth endpoints
+  // Auth endpoints - updated for astrologer-specific routes
   AUTH: {
-    LOGIN: '/auth/login',
-    OTP_REQUEST: '/auth/request-otp',
-    OTP_VERIFY: '/auth/verify-otp',
-    ME: '/auth/me'
+    LOGIN: '/astrologer-auth/login',  // Primary endpoint for astrologer login
+    OTP_REQUEST: '/auth/request-otp', // Standard OTP request endpoint
+    OTP_VERIFY: '/auth/verify-otp',   // Standard OTP verify endpoint
+    ME: '/astrologer-auth/me',        // Astrologer-specific profile endpoint
+    VERIFY_MOBILE: '/astrologer-auth/verify-mobile', // Verify if mobile is registered as astrologer
+    DEBUG: '/astrologer-auth/debug'   // Debug endpoint to test route access
   },
   
-  // Profile endpoints - try these in order
+  // Profile endpoints - try these in order (prioritize astrologer-specific routes)
   PROFILE: [
-    '/astrologers/profile',
-    '/profile/astrologer',
-    '/auth/me',
-    '/user/profile',
-    '/debug/auth-me'
+    '/astrologer-auth/profile',  // Primary endpoint for astrologer profile
+    '/astrologer-auth/me',       // Alternative for profile data
+    '/astrologers/profile',      // Legacy endpoint
+    '/profile/astrologer',       // Another possible endpoint
+    '/auth/me',                  // Generic user profile
+    '/user/profile',             // Alternative user profile
+    '/debug/auth-me'             // Debug endpoint
   ],
   
   // Chat endpoints - updated to match both models
@@ -146,6 +168,18 @@ export const API_ENDPOINTS = {
     '/astrologer/bookings'
   ]
 };
+
+// Document the available astrologer auth routes for debugging
+if (__DEV__) {
+  console.log('\n=== ASTROLOGER AUTH ROUTES ===');
+  console.log('Available endpoints:');
+  console.log('- Debug route: /api/astrologer-auth/debug');
+  console.log('- Login: /api/astrologer-auth/login');
+  console.log('- Verify mobile: /api/astrologer-auth/verify-mobile/:mobileNumber');
+  console.log('- Get profile: /api/astrologer-auth/me');
+  console.log('- Detailed profile: /api/astrologer-auth/profile');
+  console.log('=============================\n');
+}
 
 export default {
   API_URL,

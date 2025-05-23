@@ -1,6 +1,6 @@
 import 'react-native-get-random-values';
 import React, { useState, useEffect } from 'react';
-import { NavigationContainer } from '@react-navigation/native';
+import { NavigationContainer, useNavigation } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
@@ -12,6 +12,19 @@ import { AuthProvider, useAuth } from './src/contexts/AuthContext';
 import { BookingNotificationProvider } from './src/contexts/BookingNotificationContext';
 import { ChatsProvider } from './src/contexts/ChatsContext';
 import BookingRequestPopup from './src/components/BookingRequestPopup';
+import { profileService } from './src/services/api';
+import api from './src/services/api';
+
+// Type for booking requests
+interface BookingRequest {
+  _id: string;
+  userId: string;
+  astrologerId: string;
+  status: string;
+  requestType: string;
+  requestTime: string;
+  // Add other fields as needed
+}
 
 // Styled components
 const View = styled(RNView);
@@ -151,20 +164,76 @@ const debugToken = async () => {
   }
 };
 
+// Add a helper function to try to get the astrologer profile when the app starts
+const checkAstrologerProfile = async () => {
+  try {
+    console.log('Checking for astrologer profile...');
+    const profile = await profileService.getProfile();
+    console.log('Retrieved astrologer profile:', {
+      hasProfile: !!profile,
+      profileId: profile?._id
+    });
+    return profile;
+  } catch (error) {
+    console.log('Could not retrieve astrologer profile:', error);
+    
+    // Try direct API endpoints as fallback
+    try {
+      console.log('Trying fallback endpoint: /astrologers/profile...');
+      const response = await api.get('/astrologers/profile');
+      
+      if (response.data && response.data.success) {
+        console.log('Profile successfully retrieved from /astrologers/profile');
+        return response.data.data;
+      }
+    } catch (fallbackError) {
+      console.log('All profile endpoints failed');
+    }
+    return null;
+  }
+};
+
 // Main App Content Component
-function AppContent() {
-  const { isAuthenticated, loading } = useAuth();
-  
+const AppContent = () => {
+  const authContext = useAuth();
+  const [activeBookingRequests, setActiveBookingRequests] = useState<BookingRequest[]>([]);
+  const [selectedBookingRequest, setSelectedBookingRequest] = useState<BookingRequest | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  const { loading: isLoading, isAuthenticated: isSignedIn, user } = authContext!;
+
+  // Check if server is reachable and configure endpoints when app loads
+  useEffect(() => {
+    const checkServerConnection = async () => {
+      try {
+        const response = await api.get('/api/health');
+        console.log('Server connection successful:', response.data);
+        
+        // If authenticated, check the astrologer profile
+        if (isSignedIn && user) {
+          const profile = await checkAstrologerProfile();
+          if (profile && profile._id) {
+            console.log('Astrologer profile verified:', profile._id);
+          }
+        }
+      } catch (error) {
+        console.log('Server connection failed, will retry on next app launch');
+      }
+    };
+    
+    checkServerConnection();
+  }, [isSignedIn, user]);
+
   // Call the debug function when app loads if user is authenticated
   useEffect(() => {
-    if (isAuthenticated) {
+    if (isSignedIn) {
       debugToken();
     }
-  }, [isAuthenticated]);
+  }, [isSignedIn]);
   
-  console.log('AppContent rendering - Auth state:', { isAuthenticated, loading });
+  console.log('AppContent rendering - Auth state:', { isSignedIn, isLoading });
   
-  if (loading) {
+  if (isLoading) {
     return (
       <View className="flex-1 justify-center items-center">
         <ActivityIndicator size="large" color="#f97316" />
@@ -172,7 +241,7 @@ function AppContent() {
     );
   }
   
-  const initialRoute = isAuthenticated ? 'Main' : 'Login';
+  const initialRoute = isSignedIn ? 'Main' : 'Login';
   console.log('Setting initial route to:', initialRoute);
   
   return (
@@ -237,10 +306,10 @@ function AppContent() {
       </Stack.Navigator>
       
       {/* Render the booking request popup when authenticated */}
-      {isAuthenticated && <BookingRequestPopup />}
+      {isSignedIn && <BookingRequestPopup />}
     </NavigationContainer>
   );
-}
+};
 
 // Root App Component (with providers)
 export default function App() {

@@ -23,8 +23,14 @@ if (isDev) {
 const normalizeUrl = (url: string): string => {
   if (!url) return url;
   
+  // Check for http:// or https:// at the beginning (full URLs)
+  if (url.startsWith('http://') || url.startsWith('https://')) {
+    return url; // Don't modify full URLs
+  }
+  
   // If the API_URL already ends with /api and the URL starts with /api, remove the duplicate
   if (API_URL.endsWith('/api') && url.startsWith('/api')) {
+    console.log(`🔀 Converted endpoint ${url} to ${url.substring(4)}`);
     return url.substring(4); // Remove the leading /api
   }
   
@@ -105,56 +111,66 @@ const getStoredAstrologerId = async (): Promise<string | null> => {
   }
 };
 
-// Add a request interceptor to add the auth token to requests
+// Configure request interceptor to add auth token to all requests
 api.interceptors.request.use(
   async (config) => {
     try {
-      // Only log specific important requests, not booking requests
-      const isBookingRequest = config.url?.includes('booking-requests');
-      if (isDev && !isBookingRequest) {
-        console.log(`Making API request to: ${config.url}`);
-        
-        // Add extended debugging for specific request types
-        if (config.url?.includes('consultations') || config.url?.includes('bookings')) {
-          console.log('Full request details:', {
-            method: config.method,
-            url: config.url,
-            baseURL: config.baseURL,
-            params: config.params
-          });
-        }
-      }
-      
+      // First, try to get the JWT token
       const token = await AsyncStorage.getItem('token');
       
+      // Add auth token if available
       if (token) {
-        // Debug token format only in dev and not for booking requests
-        if (isDev && !isBookingRequest) {
-          console.log(`Token in use (first 10 chars): ${token.substring(0, 10)}...`);
-          
-          // Basic token format validation
-          const tokenParts = token.split('.');
-          if (tokenParts.length !== 3) {
-            console.warn('WARNING: Token does not appear to be in valid JWT format (should have 3 parts)');
-          }
-        }
-        
+        // Set authorization header
         config.headers.Authorization = `Bearer ${token}`;
-      } else if (isDev) {
-        console.log('No auth token available for request');
       }
-
-      // Add astrologer ID to requests to help backend identify the correct user
-      // This is particularly important for chat and booking operations
+      
+      // Always set app identifier
+      config.headers['X-App-Identifier'] = APP_IDENTIFIER;
+      
+      // Always add content type if not already set
+      if (!config.headers['Content-Type']) {
+        config.headers['Content-Type'] = 'application/json';
+      }
+      
+      // Get the astrologer ID for request headers
       const astrologerId = await getStoredAstrologerId();
+      
       if (astrologerId) {
         // Always add the astrologer ID to headers for all requests
         config.headers['X-Astrologer-ID'] = astrologerId;
-        config.headers['X-App-Identifier'] = APP_IDENTIFIER;
         
         // For chat-specific endpoints, add even more ID headers
         if (config.url?.includes('/chat') || config.url?.includes('/messages') || config.url?.includes('/booking')) {
-          console.log(`Adding astrologer ID ${astrologerId} to request headers for chat/booking operation`);
+          // Enhanced logging for chat endpoints
+          console.log(`🔄 CHAT REQUEST: ${config.method?.toUpperCase()} ${API_URL}${config.url}`);
+          console.log(`👤 Astrologer ID: ${astrologerId}`);
+          
+          if (token) {
+            console.log(`🔑 Token: ${token.substring(0, 15)}...`);
+          }
+          
+          // Log booking ID if present in the URL
+          const bookingIdMatch = config.url?.match(/booking\/([^\/]+)/);
+          if (bookingIdMatch && bookingIdMatch[1]) {
+            console.log(`📋 Booking ID: ${bookingIdMatch[1]}`);
+          }
+          
+          if (config.data) {
+            const dataLog = typeof config.data === 'string' ? 
+              JSON.parse(config.data) : config.data;
+            
+            if (dataLog.bookingId) {
+              console.log(`📋 Booking ID from payload: ${dataLog.bookingId}`);
+            }
+            
+            // Only log message type, not content for privacy
+            if (dataLog.message) {
+              console.log(`💬 Message type: ${dataLog.messageType || 'text'}`);
+            }
+          }
+          
+          console.log(`🔧 Headers: X-Astrologer-ID, X-App-Identifier, Authorization`);
+          
           config.headers['X-User-ID'] = astrologerId;
           config.headers['X-Sender-ID'] = astrologerId;
           
@@ -176,7 +192,20 @@ api.interceptors.request.use(
             if (typeof config.data === 'object') {
               config.data.senderId = astrologerId;
               config.data.astrologerId = astrologerId;
+              
+              // Ensure we always set senderType for messages
+              if (config.url?.includes('/messages') && !config.data.senderType) {
+                config.data.senderType = 'astrologer';
+              }
             }
+          }
+          
+          // If the URL already has /api, no need to modify
+          if (!config.url?.startsWith('/api') && !config.url?.includes('://')) {
+            // Try with /api prefix first (we handle fallbacks in the individual service methods)
+            const originalUrl = config.url;
+            config.url = `/api${originalUrl}`;
+            console.log(`🔀 Converted endpoint ${originalUrl} to ${config.url}`);
           }
         }
       } else {
@@ -198,7 +227,31 @@ api.interceptors.response.use(
   (response) => {
     // Don't log booking request responses
     const isBookingRequest = response.config.url?.includes('booking-requests');
-    if (isDev && !isBookingRequest) {
+    
+    // Enhanced logging for chat endpoints
+    if (response.config.url?.includes('/chat') || 
+        response.config.url?.includes('/messages') || 
+        response.config.url?.includes('/booking')) {
+      console.log(`✅ CHAT RESPONSE: ${response.config.method?.toUpperCase()} ${API_URL}${response.config.url}`);
+      console.log(`⏱️ Response time: ${response.headers['x-response-time'] || 'N/A'}`);
+      
+      // Log data summary, not all data
+      if (response.data) {
+        if (response.data.data && Array.isArray(response.data.data)) {
+          console.log(`📊 Received ${response.data.data.length} items`);
+        } else if (response.data.success) {
+          console.log(`🔄 Success: ${response.data.success}`);
+        }
+        
+        // Log chat ID if present
+        if (response.data.data && response.data.data._id) {
+          console.log(`💬 Chat ID: ${response.data.data._id}`);
+        } else if (response.data.data && response.data.data.chatId) {
+          console.log(`💬 Chat ID: ${response.data.data.chatId}`);
+        }
+      }
+    }
+    else if (isDev && !isBookingRequest) {
       console.log('API response success:', response.config.url);
       
       // If consultations or bookings, log more details
@@ -278,11 +331,10 @@ export const loginWithOTP = async (mobileNumber: string, otp: string) => {
     }
     
     try {
-      // Try normal API call first
-      const response = await api.post('/auth/verify-otp', { 
+      // Use the astrologer-specific endpoint from API_ENDPOINTS 
+      const response = await api.post(API_ENDPOINTS.AUTH.LOGIN, { 
         mobileNumber, 
-        otp,
-        appIdentifier: APP_IDENTIFIER
+        otp
       });
       
       // Validate the token in the response
@@ -294,58 +346,16 @@ export const loginWithOTP = async (mobileNumber: string, otp: string) => {
       
       return response.data;
     } catch (error: any) {
-      // If we get a network error, try direct axios call with different URLs
-      if (error.message && error.message.includes('Network Error')) {
-        console.log('Network error using API. Trying direct axios calls with alternate URLs...');
-        
-        // Try different URLs based on platform
-        const urlsToTry = [
-          `http://10.0.2.2:${API_PORT.split('/').pop()}/api/auth/verify-otp`, // Android emulator
-          `http://${LOCAL_IP}:${API_PORT.split('/').pop()}/api/auth/verify-otp`, // Local network
-          `http://localhost:${API_PORT.split('/').pop()}/api/auth/verify-otp` // Standard localhost
-        ];
-        
-        // Add IP logging for debugging
-        if (Platform.OS === 'android') {
-          console.log('Running on Android, recommended URL is 10.0.2.2 for emulator');
-        }
-        
-        // Try each URL
-        for (const url of urlsToTry) {
-          try {
-            console.log(`Trying direct API call to: ${url}`);
-            const directResponse = await axios.post(url, {
-              mobileNumber,
-              otp,
-              appIdentifier: APP_IDENTIFIER
-            }, {
-              headers: {
-                'Content-Type': 'application/json',
-                'X-App-Identifier': APP_IDENTIFIER,
-                'User-Agent': 'astrologer-app-mobile',
-                'X-App-Platform': Platform.OS
-              },
-              timeout: 10000
-            });
-            
-            if (directResponse.data && directResponse.data.success) {
-              console.log(`Success with direct call to ${url}`);
-              return directResponse.data;
-            }
-          } catch (directError: any) {
-            console.log(`Error with ${url}:`, directError.message || 'Unknown error');
-          }
-        }
-        
-        // If all direct calls fail, throw the original error
-        throw error;
-      } else {
-        // Not a network error, rethrow
-        throw error;
-      }
+      // If the astrologer-specific endpoint fails, fall back to the standard auth
+      console.log('Astrologer login failed, trying standard auth endpoint');
+      const response = await api.post('/auth/login', { 
+        mobileNumber, 
+        otp
+      });
+      return response.data;
     }
-  } catch (error) {
-    console.error('OTP verification error:', error);
+  } catch (error: any) {
+    console.error('Login with OTP error:', error.message);
     throw error;
   }
 };
@@ -365,8 +375,15 @@ export const requestOTP = async (mobileNumber: string) => {
 
 export const getCurrentUser = async () => {
   try {
-    const response = await api.get('/auth/me');
-    return response.data;
+    // Try the astrologer-specific endpoint first
+    try {
+      const response = await api.get(API_ENDPOINTS.AUTH.ME);
+      return response.data;
+    } catch (error) {
+      console.log('Astrologer ME endpoint failed, trying standard endpoint');
+      const response = await api.get('/auth/me');
+      return response.data;
+    }
   } catch (error) {
     console.error('Get current user error:', error);
     throw error;
@@ -375,35 +392,78 @@ export const getCurrentUser = async () => {
 
 // Profile service for astrologer profile operations
 export const profileService = {
-  // Get astrologer profile
+  // Get astrologer profile with fallback strategy
   getProfile: async () => {
     try {
-      // Try the primary endpoint first
-      const response = await api.get(API_ENDPOINTS.PROFILE[0]);
+      console.log('Attempting to get astrologer profile...');
       
-      if (response.data && response.data.success) {
-        console.log('Profile successfully retrieved');
-        return response.data.data;
-      } else {
-        throw new Error('Invalid response format');
+      // Try each endpoint in the PROFILE array until one works
+      for (const endpoint of API_ENDPOINTS.PROFILE) {
+        try {
+          console.log(`Trying ${endpoint} endpoint...`);
+          const response = await api.get(endpoint);
+          
+          if (response.data && response.data.success) {
+            console.log(`Profile successfully retrieved from ${endpoint}`);
+            
+            // Different endpoints return data in different formats
+            if (endpoint.includes('/me')) {
+              return response.data.astrologer || response.data.data;
+            } else {
+              return response.data.data || response.data.astrologer;
+            }
+          }
+        } catch (error) {
+          console.log(`${endpoint} failed, trying next endpoint`);
+        }
       }
+      
+      // Try the debug endpoint as a last resort
+      try {
+        console.log('Trying fallback endpoint: /astrologers/profile...');
+        const response = await api.get('/astrologers/profile');
+        
+        if (response.data && response.data.success) {
+          console.log('Profile successfully retrieved from /astrologers/profile');
+          return response.data.data;
+        }
+      } catch (error) {
+        console.log('All profile endpoints failed');
+      }
+      
+      throw new Error('Could not retrieve astrologer profile from any endpoint');
     } catch (error) {
-      console.error('Error getting profile:', error);
+      console.error('Error getting astrologer profile:', error);
       throw error;
     }
   },
   
-  // Update astrologer profile
+  // Update astrologer profile with fallback strategy
   updateProfile: async (profileData: any) => {
     try {
-      const response = await api.put(API_ENDPOINTS.PROFILE[0], profileData);
+      console.log('Attempting to update astrologer profile...');
       
-      if (response.data && response.data.success) {
-        console.log('Profile successfully updated');
-        return response.data.data;
-      } else {
-        throw new Error('Invalid response format');
+      try {
+        console.log('Trying primary endpoint...');
+        const response = await api.put(API_ENDPOINTS.PROFILE[0], profileData);
+        
+        if (response.data && response.data.success) {
+          console.log('Profile successfully updated');
+          return response.data.data;
+        }
+      } catch (error) {
+        console.log('Primary update endpoint failed, trying alternative');
       }
+      
+      // Try second endpoint if first fails
+      const alternativeResponse = await api.put('/astrologers/profile', profileData);
+      
+      if (alternativeResponse.data && alternativeResponse.data.success) {
+        console.log('Profile successfully updated via alternative endpoint');
+        return alternativeResponse.data.data;
+      }
+      
+      throw new Error('All update endpoints failed');
     } catch (error) {
       console.error('Error updating profile:', error);
       throw error;

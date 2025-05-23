@@ -24,10 +24,10 @@ export default function LoginScreen({ navigation }: Props) {
     try {
       // Try different URLs based on platform
       const urlsToTry = [
-        `${API_URL}/debug/lookup-astrologer/${mobile}`,
-        `http://10.0.2.2:${API_PORT.split('/').pop()}/api/debug/lookup-astrologer/${mobile}`, // Android emulator
-        `http://${LOCAL_IP}:${API_PORT.split('/').pop()}/api/debug/lookup-astrologer/${mobile}`, // Local network
-        `http://localhost:${API_PORT.split('/').pop()}/api/debug/lookup-astrologer/${mobile}` // Standard localhost
+        `${API_URL}/astrologer-auth/verify-mobile/${mobile}`,
+        `http://10.0.2.2:${API_PORT.split('/').pop()}/api/astrologer-auth/verify-mobile/${mobile}`, // Android emulator
+        `http://${LOCAL_IP}:${API_PORT.split('/').pop()}/api/astrologer-auth/verify-mobile/${mobile}`, // Local network
+        `http://localhost:${API_PORT.split('/').pop()}/api/astrologer-auth/verify-mobile/${mobile}` // Standard localhost
       ];
       
       let error = null;

@@ -3,33 +3,44 @@ import {
   View,
   Text,
   TextInput,
-  TouchableOpacity,
   FlatList,
-  KeyboardAvoidingView,
-  Platform,
+  TouchableOpacity,
   ActivityIndicator,
   StyleSheet,
-  Alert
+  KeyboardAvoidingView,
+  Platform,
+  Alert,
+  Keyboard,
+  Image,
+  Dimensions,
+  SafeAreaView,
+  StatusBar,
+  ScrollView,
+  Modal,
+  Linking,
+  Animated,
 } from 'react-native';
-import { useRoute, useNavigation, RouteProp } from '@react-navigation/native';
+import { useRoute, RouteProp, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { RootStackParamList } from '../types/navigation';
-import { chatService } from '../services/chatService';
-import { formatDistanceToNow } from 'date-fns';
-import { Ionicons } from '@expo/vector-icons';
+import { Ionicons, MaterialIcons, FontAwesome } from '@expo/vector-icons';
+import { RootStackParamList } from '../navigation/types';
 import * as socketService from '../services/socketService';
+import * as chatService from '../services/chatService';
+import { Socket } from 'socket.io-client';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import axios from 'axios';
-import { API_URL } from '../config';
-import { v4 as uuidv4 } from 'uuid';
+import { format } from 'date-fns';
+import { Audio } from 'expo-av';
+// import NetInfo from '@react-native-community/netinfo';
+import { checkNetworkConnectivity, enhancedJoinChatRoom, isSocketInRoom, getSocket } from '../services/socketService';
 
+// Message interface
 interface Message {
   _id?: string;
-  id?: string;  // Alternative ID property that might be in server response
+  id?: string;
   message: string;
-  content?: string; // Alternative content property that might be used instead of message
+  content?: string;
   timestamp: Date | string | number;
-  createdAt?: Date | string | number; // Alternative timestamp property
+  createdAt?: Date | string | number;
   senderType: 'user' | 'astrologer' | 'system';
   read?: boolean;
   sender?: string;
@@ -40,6 +51,7 @@ interface Message {
   temporaryId?: string;
 }
 
+// Chat data interface
 interface ChatData {
   _id: string;
   user: {
@@ -60,23 +72,27 @@ interface ChatData {
 const extractChatId = (data: any): string | null => {
   if (!data) return null;
   
-  // Check for chatId in different possible locations and ensure it's a string
-  if (data.chatId && typeof data.chatId === 'string') return data.chatId;
-  if (data._id && typeof data._id === 'string') return data._id;
-  if (data.data?.chatId && typeof data.data.chatId === 'string') return data.data.chatId;
-  
-  // Convert non-string IDs to strings if possible
-  if (data.chatId) return String(data.chatId);
   if (data._id) return String(data._id);
+  if (data.chatId) return String(data.chatId);
+  if (data.data?._id) return String(data.data._id);
   if (data.data?.chatId) return String(data.data.chatId);
   
   return null;
 };
 
 const ChatScreen = () => {
-  const route = useRoute<RouteProp<RootStackParamList, 'Chat'>>();
+  const route = useRoute();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { chatId, bookingId } = route.params;
+  // Define types for route params
+  interface ChatRouteParams {
+    chatId?: string;
+    bookingId?: string;
+  }
+  
+  // Extract params with type safety
+  const params = route.params as ChatRouteParams || {};
+  const chatId = params.chatId;
+  const bookingId = params.bookingId;
   const [chatData, setChatData] = useState<ChatData | null>(null);
   const [messages, setMessages] = useState<Message[]>([]);
   const [message, setMessage] = useState('');
@@ -89,987 +105,964 @@ const ChatScreen = () => {
   const [typingTimeout, setTypingTimeout] = useState<NodeJS.Timeout | null>(null);
   const flatListRef = useRef<FlatList>(null);
   const socketConnected = useRef(false);
-  const [userId, setUserId] = useState<string | null>(null);
-  const [astrologerId, setAstrologerId] = useState<string | null>(null);
-  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
-  const [currentBookingId, setCurrentBookingId] = useState<string | null>(null);
-  const sentMessages = useRef(new Set());
-
-  // Initialize IDs from route params
-  useEffect(() => {
-    if (route.params?.chatId) {
-      setCurrentChatId(route.params.chatId);
-    }
-    if (route.params?.bookingId) {
-      setCurrentBookingId(route.params.bookingId);
-    }
-  }, [route.params?.chatId, route.params?.bookingId]);
-
-  // Function to get the astrologer ID
-  const getAstrologerId = async () => {
-    try {
-      // First try to get from profile in AsyncStorage
-      const astrologerProfileString = await AsyncStorage.getItem('astrologerProfile');
-      if (astrologerProfileString) {
-        const profile = JSON.parse(astrologerProfileString);
-        if (profile && profile._id) {
-          return profile._id;
-        }
-      }
-
-      // Fallback to direct astrologerId in AsyncStorage
-      const directId = await AsyncStorage.getItem('astrologerId');
-      if (directId) {
-        return directId;
-      }
-
-      // Last resort - get from userData if available
-      const userDataString = await AsyncStorage.getItem('userData');
-      if (userDataString) {
-        const userData = JSON.parse(userDataString);
-        if (userData && (userData.astrologerId || userData._id)) {
-          return userData.astrologerId || userData._id;
-        }
-      }
-
-      throw new Error('Could not determine astrologer ID');
-    } catch (err) {
-      console.error('Error getting astrologer ID:', err);
-      return null;
-    }
-  };
-
-  // Connect to socket for this chat
-  const connectToSocket = useCallback(async () => {
-    if (isConnecting || isConnected) return;
-    
-    try {
-      setIsConnecting(true);
-      console.log('Connecting to socket...');
-      
-      // Connect to socket server
-      const socket = await socketService.connectSocket();
-      if (!socket) {
-        throw new Error('Failed to connect to socket server');
-      }
-      
-      socketConnected.current = true;
-      console.log('Socket connected successfully, now joining chat room');
-      
-      // Get the latest chat ID and booking ID from state or route params
-      const chatIdToUse = currentChatId || route.params?.chatId;
-      const bookingIdToUse = currentBookingId || route.params?.bookingId;
-      
-      console.log(`Attempting to join chat room with ID: ${chatIdToUse}`);
-      
-      // Try joining with chat ID first, passing both chat ID and booking ID
-      const joinResult = await socketService.joinChatRoom(chatIdToUse, bookingIdToUse);
-      
-      if (!joinResult.success) {
-        console.log('Failed to join with chat ID, trying with booking ID only');
-        
-        // If joining with chat ID fails, try with booking ID only
-        if (bookingIdToUse && bookingIdToUse !== chatIdToUse) {
-          console.log(`Trying to join using booking ID only: ${bookingIdToUse}`);
-          
-          // Try joining with just the booking ID
-          const bookingJoinResult = await socketService.joinChatRoom('', bookingIdToUse);
-          
-          if (!bookingJoinResult.success) {
-            console.error('Failed to join using booking ID');
-          } else {
-            console.log('Successfully joined chat room with booking ID');
-          }
-        } else {
-          console.error('Failed to join chat room and no booking ID to try with');
-        }
-      } else {
-        console.log('Successfully joined chat room with chat ID');
-      }
-      
-      // Setup socket event listeners regardless of join result
-      setupSocketListeners();
-      
-      setIsConnected(true);
-    } catch (err) {
-      console.error('Error connecting to socket:', err);
-      Alert.alert(
-        'Connection Error',
-        'Failed to connect to chat server. Please check your internet connection and try again.',
-        [{ text: 'OK' }]
-      );
-    } finally {
-      setIsConnecting(false);
-    }
-  }, [isConnected, isConnecting, currentChatId, currentBookingId, route.params?.chatId, route.params?.bookingId]);
-
-  // Setup socket event listeners for real-time chat
-  const setupSocketListeners = async () => {
-    // Don't set up listeners if socket is not available
-    if (!socketService.isSocketConnected()) {
-      console.log('Cannot setup listeners - socket not connected');
+  const socketRef = useRef<Socket | null>(null);
+  
+  // Handle sending messages
+  const handleSendMessage = async () => {
+    if (!message.trim() || sending || !currentChatId) {
       return;
-    }
-    
-    const socket = await socketService.connectSocket();
-    if (!socket) return;
-    
-    console.log('Setting up socket event listeners');
-    
-    // Clean up existing listeners first to prevent duplicates
-    const cleanup = async () => {
-      console.log('Removing existing socket listeners to prevent duplicates');
-      socket.off('chat:newMessage');
-      socket.off('chat:typing');
-      socket.off('chat:messagesRead');
-      socket.off('chat:error');
-      socket.off('chat:joined');
-    };
-    
-    await cleanup();
-    
-    // Set up new listeners
-    socket.on('chat:joined', (data) => {
-      console.log('Successfully joined chat room:', data);
-      
-      // If we have a chatId in the response but not in our route params, update the route
-      if (data && data.roomId && data.roomId !== route.params.chatId) {
-        console.log(`Updating route params with new chat ID from socket: ${data.roomId}`);
-        navigation.setParams({ 
-          chatId: data.roomId, 
-          bookingId: route.params.bookingId 
-        });
-      }
-    });
-    
-    socket.on('chat:newMessage', (data) => {
-      console.log('New message received from socket:', data);
-      if (!data || !data.message) {
-        console.log('Received invalid message data:', data);
-        return;
-      }
-      
-      // Ensure the incoming message conforms to our Message interface
-      const rawMessage = data.message as any; // Use type assertion for flexibility
-      
-      const formattedMessage: Message = {
-        _id: rawMessage._id || `temp_${Date.now()}`,
-        message: typeof rawMessage.message === 'string' ? rawMessage.message : 
-                (typeof rawMessage.content === 'string' ? rawMessage.content : 
-                 JSON.stringify(rawMessage)),
-        timestamp: rawMessage.timestamp || rawMessage.createdAt || new Date(),
-        senderType: rawMessage.senderType || 'user',
-        read: rawMessage.read || false,
-        sender: rawMessage.sender,
-        temporaryId: rawMessage.temporaryId
-      };
-      
-      // Only add the message if we could extract message text
-      if (formattedMessage.message) {
-        setMessages(prevMessages => [...prevMessages, formattedMessage]);
-        
-        // Auto-scroll to bottom on new message
-        setTimeout(() => {
-          flatListRef.current?.scrollToEnd({ animated: true });
-        }, 100);
-        
-        // Mark messages as read if they're from user
-        if (formattedMessage.senderType === 'user' && route.params.chatId) {
-          console.log('Marking user message as read');
-          socket.emit('chat:markRead', { chatId: route.params.chatId });
-        }
-      } else {
-        console.error('Could not extract message text from incoming socket message:', data.message);
-      }
-    });
-    
-    socket.on('chat:typing', (data) => {
-      console.log('Typing event received:', data);
-      if (data.userType === 'user') {
-        setUserTyping(data.isTyping);
-      }
-    });
-    
-    socket.on('chat:messagesRead', (data) => {
-      console.log('Messages read event received:', data);
-      // Update messages read status
-      setMessages(prevMessages => 
-        prevMessages.map(msg => 
-          msg.senderType === 'astrologer' && !msg.read 
-            ? { ...msg, read: true } 
-            : msg
-        )
-      );
-    });
-    
-    socket.on('chat:error', (error) => {
-      console.error('Chat error from server:', error);
-      Alert.alert('Chat Error', error.message || 'An error occurred with the chat connection');
-    });
-    
-    return cleanup;
-  };
-
-  const ensureChatExists = async () => {
-    try {
-      // Check if we have a booking ID in state or route params
-      const bookingIdToUse = currentBookingId || route.params?.bookingId;
-      
-      if (!bookingIdToUse) {
-        console.error('No booking ID available');
-        Alert.alert('Error', 'No booking ID available');
-        return;
-      }
-
-      console.log(`Ensuring chat exists for booking ${bookingIdToUse}...`);
-      
-      // Get astrologer ID
-      const astrologerId = await getAstrologerId();
-      if (!astrologerId) {
-        console.error('Could not get valid astrologer ID');
-        Alert.alert('Error', 'Could not determine astrologer ID');
-        return;
-      }
-      
-      // Try to get existing chat
-      let chatData = null;
-      try {
-        chatData = await chatService.getChatByBookingId(bookingIdToUse);
-        if (chatData && chatData._id) {
-          console.log(`Found existing chat: ${chatData._id}`);
-          // Extract chat ID and update route params
-          const extractedChatId = chatData._id;
-          setCurrentChatId(extractedChatId);
-          setCurrentBookingId(bookingIdToUse);
-          navigation.setParams({ chatId: extractedChatId, bookingId: bookingIdToUse });
-          
-          // Set chat data and messages
-          setChatData(chatData);
-          setMessages(chatData.messages || []);
-          
-          // Mark messages as read using booking ID to avoid 404 errors
-          // This is safer than using the chat ID which might lead to errors
-          const markResult = await chatService.markMessagesAsRead(extractedChatId, bookingIdToUse);
-          if (!markResult?.success && markResult?.error) {
-            console.log(`Note when marking messages as read: ${markResult.error}`);
-          }
-          
-          // Join chat room with both IDs
-          await socketService.joinChatRoom(extractedChatId, bookingIdToUse);
-          return;
-        }
-      } catch (error) {
-        console.log('No existing chat found, will create new one');
-      }
-      
-      // Get user ID from chat data or booking details
-      let userId = null;
-      if (chatData && chatData.user && chatData.user._id) {
-        userId = chatData.user._id;
-        console.log(`Using user ID from chat data: ${userId}`);
-      } else {
-        try {
-          const bookingDetails = await chatService.getBookingDetails(bookingIdToUse);
-          userId = bookingDetails.userId?._id || 
-                   bookingDetails.userId || 
-                   bookingDetails.user?._id || 
-                   bookingDetails.user;
-          if (userId) {
-            console.log(`Using user ID from booking details: ${userId}`);
-          }
-        } catch (error) {
-          console.error('Error getting user ID from booking details:', error);
-        }
-      }
-      
-      // Create new chat if we have user ID
-      if (userId) {
-        try {
-          console.log(`Creating new chat for booking ${bookingIdToUse} with user ${userId}`);
-          const newChat = await chatService.createChatForBooking(bookingIdToUse, userId);
-          if (newChat && newChat._id) {
-            console.log(`Created new chat: ${newChat._id}`);
-            // Extract chat ID and update route params
-            const extractedChatId = newChat._id;
-            setCurrentChatId(extractedChatId);
-            setCurrentBookingId(bookingIdToUse);
-            navigation.setParams({ chatId: extractedChatId, bookingId: bookingIdToUse });
-            
-            // Set chat data and messages
-            setChatData(newChat);
-            setMessages(newChat.messages || []);
-            
-            // Wait a moment before trying to mark messages as read
-            // This helps avoid race conditions with chat creation
-            await new Promise(resolve => setTimeout(resolve, 500));
-            
-            // Join chat room with both IDs - use booking ID path for better compatibility
-            await socketService.joinChatRoom(extractedChatId, bookingIdToUse);
-            
-            // Send initial message if no messages exist
-            if (!newChat.messages || newChat.messages.length === 0) {
-              await chatService.sendMessage(extractedChatId, 'Hello! How can I help you today?', 'text', bookingIdToUse);
-            }
-          } else {
-            console.error('Created chat but no ID returned');
-            Alert.alert('Error', 'Failed to create chat - no ID returned');
-          }
-        } catch (chatError) {
-          console.error('Error creating chat:', chatError);
-          Alert.alert('Error', 'Failed to create chat. Please try again.');
-        }
-      } else {
-        console.error('Could not get user ID for creating chat');
-        Alert.alert('Error', 'Could not create chat - missing user information');
-      }
-    } catch (error) {
-      console.error('Error ensuring chat exists:', error);
-      Alert.alert('Error', 'Failed to create or join chat');
-    }
-  };
-
-  const loadChat = useCallback(async () => {
-    try {
-      setError(null);
-      console.log(`Fetching messages for chat ${chatId}...`);
-      
-      // Check if we're using a booking ID instead of a chat ID
-      const bookingIdToUse = currentBookingId || route.params?.bookingId;
-      const isLikelyBookingId = bookingIdToUse && (bookingIdToUse === chatId || !chatId);
-      
-      if (isLikelyBookingId) {
-        console.log(`ID ${chatId} appears to be a booking ID rather than a chat ID`);
-        await ensureChatExists();
-        setLoading(false);
-        return;
-      }
-      
-      // Try to get chat messages from API
-      try {
-        // Pass both chatId and bookingId to getChatMessages
-        console.log(`Fetching messages with chatId: ${chatId}, bookingId: ${bookingIdToUse}`);
-        const data = await chatService.getChatMessages(chatId, bookingIdToUse);
-        
-        // Check if we actually got messages or if it's an empty chat
-        // Type guard to handle different response formats
-        if (data && typeof data === 'object') {
-          // Handle potential response formats
-          if ('chat' in data && data.chat && typeof data.chat === 'object' && 'messages' in data.chat && Array.isArray(data.chat.messages)) {
-            // Use proper type casting to prevent TypeScript errors
-            const chatData = data.chat as unknown as ChatData;
-            setChatData(chatData);
-            setMessages(chatData.messages);
-          } else if ('messages' in data && Array.isArray(data.messages)) {
-            // Use proper type casting
-            setChatData(data as unknown as ChatData);
-            setMessages(data.messages as Message[]);
-          } else if (Array.isArray(data)) {
-            // If data is just an array of messages
-            setMessages(data as Message[]);
-          } else {
-            console.log("Chat exists but has no messages");
-            if ('_id' in data) {
-              // It has required ChatData properties
-              setChatData(data as unknown as ChatData);
-            }
-            setMessages([]);
-          }
-          
-          // Mark messages as read - Pass both chatId and bookingId
-          const markResult = await chatService.markMessagesAsRead(chatId, bookingIdToUse);
-          if (!markResult?.success && markResult?.error) {
-            console.log(`Note: ${markResult.error}`);
-          }
-          
-          // Connect to socket
-          await connectToSocket();
-        } else {
-          console.log("Chat exists but has no messages");
-          setMessages([]);
-          
-          // Connect to socket
-          await connectToSocket();
-        }
-      } catch (fetchErr) {
-        console.error("Error fetching chat messages:", fetchErr);
-        
-        // If chat doesn't exist and we have a booking ID, try to create one
-        if (bookingIdToUse) {
-          console.log(`Chat ${chatId} not found, trying to create using booking ${bookingIdToUse}`);
-          await ensureChatExists();
-        } else {
-          console.error("Chat not found and no booking ID available");
-          setError("Chat not found. Please try again later.");
-        }
-      }
-    } catch (err) {
-      console.error('Error loading chat:', err);
-      setError('Failed to load chat messages. Please try again.');
-    } finally {
-      setLoading(false);
-    }
-  }, [chatId, currentBookingId, route.params?.bookingId, connectToSocket]);
-
-  const handleSendMessage = async (messageText: string) => {
-    if (!messageText.trim()) return;
-    
-    // Clear the input field immediately for better UX
-    setMessage('');
-    
-    // Generate a unique ID for this message attempt
-    const uniqueAttemptId = `${Date.now()}-${messageText.substring(0, 10)}`;
-    
-    // Check if we've already tried sending this message recently (debounce)
-    if (sentMessages.current.has(uniqueAttemptId)) {
-      console.log('Duplicate message send attempt detected and prevented');
-      return;
-    }
-    
-    // Add to sent messages cache
-    sentMessages.current.add(uniqueAttemptId);
-    
-    // Clear old entries from the cache (prevent memory leaks)
-    if (sentMessages.current.size > 20) {
-      const values = Array.from(sentMessages.current.values());
-      sentMessages.current.delete(values[0]);
     }
     
     try {
       setSending(true);
       
-      // Generate a temporary ID for optimistic update
-      const tempMsgId = uuidv4();
-      
       // Create a temporary message to show immediately in the UI
       const tempMessage: Message = {
-        _id: tempMsgId,
-        message: messageText,
+        _id: `temp-${Date.now()}`,
+        message: message.trim(),
+        content: message.trim(),
         timestamp: new Date(),
         senderType: 'astrologer',
         read: false,
-        temporaryId: tempMsgId // Mark as temporary
+        temporaryId: `temp-${Date.now()}`
       };
       
-      // Add to messages list immediately (optimistic update)
+      // Add to messages array immediately for UI feedback
       setMessages(prevMessages => [...prevMessages, tempMessage]);
       
-      // Scroll to bottom
-      setTimeout(() => {
-        flatListRef.current?.scrollToEnd({ animated: true });
-      }, 50);
+      // Clear the input
+      setMessage('');
       
-      // Get current chat ID and booking ID
-      const chatIdToUse = currentChatId || chatId;
-      const bookingIdToUse = currentBookingId || route.params?.bookingId;
-      
-      if (!chatIdToUse && !bookingIdToUse) {
-        console.error('No chat ID or booking ID available for sending message');
-        Alert.alert('Error', 'Cannot send message: No chat or booking ID available');
-        return;
+      // Send via socket if connected
+      if (socketRef.current?.connected) {
+        socketRef.current.emit('chat:sendMessage', {
+          chatId: currentChatId,
+          bookingId: currentBookingId,
+          message: tempMessage.message,
+          senderType: 'astrologer'
+        });
       }
       
-      console.log(`Sending message through API with chatId: ${chatIdToUse}, bookingId: ${bookingIdToUse}`);
-      
-      // Send message through API (always include bookingId when available)
-      const response = await chatService.sendMessage(
-        chatIdToUse || '', 
-        messageText,
-        'text',
-        bookingIdToUse
-      );
-      
-      // Update with the official message from the server
-      if (response && response.data) {
-        // Extract and format server response before updating the UI
-        const responseData = response.data as any; // Use type assertion for flexibility
-        
-        const serverMessage: Message = {
-          _id: responseData._id || responseData.id || tempMsgId,
-          message: typeof responseData.message === 'string' ? responseData.message : 
-                  (typeof responseData.content === 'string' ? responseData.content : 
-                   messageText), // fallback to original text
-          timestamp: responseData.timestamp || responseData.createdAt || new Date(),
-          senderType: responseData.senderType || 'astrologer',
-          read: responseData.read || false
-        };
-        
-        // Replace temporary message with the actual one from the server
-        setMessages(prevMessages => 
-          prevMessages.map(msg => 
-            (msg.temporaryId === tempMsgId) ? serverMessage : msg
-          )
+      // Also send via API as backup
+      try {
+        const response = await chatService.chatService.sendMessage(
+          currentChatId,
+          tempMessage.message,
+          'text',  // messageType
+          currentBookingId || undefined
         );
         
-        console.log('Message sent successfully through API');
-      } else {
-        console.log('Message sent but no response data returned');
-      }
-      
-      // If socket is not connected, try to connect
-      if (!isConnected || !socketService.isSocketConnected()) {
-        await connectToSocket();
+        console.log('Message sent via API:', response);
+      } catch (apiError) {
+        console.error('Failed to send message via API:', apiError);
+        // We don't show an error here since the socket might have worked
       }
     } catch (error) {
       console.error('Error sending message:', error);
-      
-      // Show error to user
-      Alert.alert(
-        'Message Failed',
-        'Your message could not be sent. Please try again.',
-        [{ text: 'OK' }]
-      );
-      
-      // Remove the failed temporary message
-      setMessages(prevMessages => 
-        prevMessages.filter(msg => !msg.temporaryId)
-      );
+      Alert.alert('Error', 'Failed to send message. Please try again.');
     } finally {
       setSending(false);
     }
   };
-
-  // Handle typing indication
-  const handleTyping = () => {
-    // Don't send typing events if we're not connected
-    if (!isConnected) return;
-    
-    // Get the current chat ID from route params
-    const currentChatId = route.params.chatId;
-    if (!currentChatId) return;
-    
-    // If we already have a timeout, clear it
-    if (typingTimeout) {
-      clearTimeout(typingTimeout);
+  
+  // Load messages from the server - declaration moved up for reference in performBackgroundRetries
+  const loadMessages = async () => {
+    try {
+      setLoading(true);
+      setError(null);
+      
+      // Check if we have a valid chat ID or booking ID
+      if (!currentChatId && !currentBookingId) {
+        setError('No chat ID or booking ID available');
+        setLoading(false);
+        return;
+      }
+      
+      // Fetch messages using the current chat ID and booking ID
+      console.log(`Loading messages for chat ID: ${currentChatId}, booking ID: ${currentBookingId}`);
+      
+      let chatResponse;
+      try {
+        if (currentChatId) {
+          console.log('Fetching chat by chat ID:', currentChatId);
+          chatResponse = await chatService.chatService.getChatById(currentChatId);
+        } else if (currentBookingId) {
+          console.log('Fetching chat by booking ID:', currentBookingId);
+          chatResponse = await chatService.chatService.getChatByBookingId(currentBookingId);
+        }
+        
+        if (chatResponse) {
+          console.log('Chat response:', chatResponse);
+          const chatData = chatResponse.data || chatResponse;
+          setChatData(chatData);
+          setMessages(chatData.messages || []);
+          
+          // Mark messages as read
+          if (currentChatId) {
+            try {
+              await chatService.chatService.markMessagesAsRead(currentChatId, currentBookingId || '');
+            } catch (markReadError) {
+              console.error('Error marking messages as read:', markReadError);
+            }
+          }
+        } else {
+          console.warn('No chat data returned from server');
+        }
+      } catch (fetchError) {
+        console.error('Error fetching chat:', fetchError);
+        setError(`Failed to fetch chat: ${fetchError instanceof Error ? fetchError.message : String(fetchError)}`);
+      }
+      
+      setLoading(false);
+    } catch (error) {
+      console.error('Error loading messages:', error);
+      setError('Failed to load messages. Please try again.');
+      setLoading(false);
     }
-    
-    // Get socket instance
-    socketService.connectSocket().then(socket => {
-      if (!socket) return;
-      
-      // Emit typing event
-      socket.emit('chat:typing', {
-        chatId: currentChatId,
-        isTyping: true
-      });
-      
-      // Set a timeout to stop typing after 2 seconds
-      const timeout = setTimeout(() => {
-        // Emit stop typing event
-        socket?.emit('chat:typing', {
-          chatId: currentChatId,
-          isTyping: false
-        });
-      }, 2000);
-      
-      setTypingTimeout(timeout);
+  };
+  
+  // Helper function to perform background retries for chat room joining
+  const performBackgroundRetries = (chatId: string, bookingId: string) => {
+    // More aggressive retry strategy with increasing delays
+    [2000, 5000, 10000, 20000].forEach((delay, index) => {
+      setTimeout(() => {
+        console.log(`Background retry ${index + 1} for chat room join...`);
+        // First ensure the socket is connected
+        socketService.connectSocket()
+          .then(() => {
+            console.log(`Socket connected for background retry ${index + 1}`);
+            // Then try to join the room
+            return socketService.enhancedJoinChatRoom(chatId || '', bookingId || '', {
+              timeout: 15000, // Longer timeout for background retries
+              retryCount: 2,  // More retries per attempt
+              onProgress: (status) => console.log(`Background retry ${index + 1} progress: ${status}`)
+            });
+          })
+          .then(retryResult => {
+            console.log(`Background retry ${index + 1} result:`, retryResult);
+            if (retryResult.success) {
+              // Update connection status
+              socketConnected.current = true;
+              setIsConnected(true);
+              setHasJoinedRoom(true);
+              setIsSocketReady(true);
+              // Update UI to show we're connected
+              console.log('Background retry successful, updating UI states');
+              // Refresh messages to ensure we have the latest
+              loadMessages();
+            } else {
+              // Still update the socket ready state based on current connection
+              setIsSocketReady(socketService.isSocketConnected());
+            }
+          })
+          .catch(error => {
+            console.error(`Background retry ${index + 1} failed:`, error);
+            // Update socket status based on current connection
+            setIsSocketReady(socketService.isSocketConnected());
+            
+            // If this is the last retry, update the error message
+            if (index === 3) { // Last retry in our array [2000, 5000, 10000, 20000]
+              let errorMessage = `All background retries failed`;
+              if (error instanceof Error) {
+                errorMessage += `: ${error.message}`;
+              }
+              
+              // Check network status
+              checkNetworkConnectivity().then(isConnected => {
+                if (!isConnected) {
+                  setNetworkStatus(false);
+                  errorMessage += ' - Network connection issue detected';
+                }
+                setError(errorMessage);
+                
+                // Log diagnostic information
+                console.log('Final connection diagnostic after all retries:', {
+                  socketConnected: socketService.isSocketConnected(),
+                  networkStatus: isConnected,
+                  chatId,
+                  bookingId
+                });
+              });
+            }
+          });
+      }, delay);
     });
   };
+  const [userId, setUserId] = useState<string | null>(null);
+  const [astrologerId, setAstrologerId] = useState<string | null>(null);
+  const [currentChatId, setCurrentChatId] = useState<string | null>(null);
+  const [currentBookingId, setCurrentBookingId] = useState<string | null>(null);
+  const [networkStatus, setNetworkStatus] = useState<boolean>(true);
+  const [messageInput, setMessageInput] = useState<TextInput | null>(null);
+  const [showScrollButton, setShowScrollButton] = useState(false);
+  const [isAtBottom, setIsAtBottom] = useState(true);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [showImagePreview, setShowImagePreview] = useState(false);
+  const [selectedImage, setSelectedImage] = useState<string | null>(null);
+  const [pendingMessages, setPendingMessages] = useState<Message[]>([]);
+  const [retryingMessages, setRetryingMessages] = useState<{[key: string]: boolean}>({});
+  const [lastMessageTimestamp, setLastMessageTimestamp] = useState<number>(0);
+  const [notificationSound, setNotificationSound] = useState<Audio.Sound | null>(null);
+  const [typingIndicatorVisible, setTypingIndicatorVisible] = useState(false);
+  const typingIndicatorTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [isKeyboardVisible, setIsKeyboardVisible] = useState(false);
+  const [keyboardHeight, setKeyboardHeight] = useState(0);
+  const [isRefreshing, setIsRefreshing] = useState(false);
+  const [hasLoadedInitialMessages, setHasLoadedInitialMessages] = useState(false);
+  const [isLoadingMore, setIsLoadingMore] = useState(false);
+  const [hasMoreMessages, setHasMoreMessages] = useState(true);
+  const [page, setPage] = useState(1);
+  const [isReconnecting, setIsReconnecting] = useState(false);
+  const reconnectAttempts = useRef(0);
+  const maxReconnectAttempts = 5;
+  const reconnectInterval = useRef<NodeJS.Timeout | null>(null);
+  const [showConnectionStatus, setShowConnectionStatus] = useState(false);
+  const connectionStatusTimeout = useRef<NodeJS.Timeout | null>(null);
+  const [connectionStatusMessage, setConnectionStatusMessage] = useState('');
+  const [connectionStatusType, setConnectionStatusType] = useState<'error' | 'success' | 'warning'>('warning');
+  const fadeAnim = useRef(new Animated.Value(0)).current;
+  // Removed redundant state variables
+  const [hasJoinedRoom, setHasJoinedRoom] = useState(false);
+  const [isInitialLoad, setIsInitialLoad] = useState(true);
+  const [messagesMap, setMessagesMap] = useState<{[key: string]: Message}>({});
+  const [messageQueue, setMessageQueue] = useState<Message[]>([]);
+  const messageQueueProcessing = useRef(false);
+  const [isSocketReady, setIsSocketReady] = useState(false);
+  const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
+  const [socketConnectionAttempts, setSocketConnectionAttempts] = useState(0);
+  const [lastSocketConnectionAttempt, setLastSocketConnectionAttempt] = useState(0);
+  const [socketConnectionStatus, setSocketConnectionStatus] = useState<'disconnected' | 'connecting' | 'connected'>('disconnected');
+  const [diagnosticInfo, setDiagnosticInfo] = useState<{[key: string]: any}>({});
+  const [showDiagnostics, setShowDiagnostics] = useState(true); // Enable diagnostics by default
+  const [isInitialized, setIsInitialized] = useState(false);
+  const [hasAttemptedJoin, setHasAttemptedJoin] = useState(false);
+  const [joinAttempts, setJoinAttempts] = useState(0);
+  const [lastStatusCheck, setLastStatusCheck] = useState(0); // Add lastStatusCheck state
+  const [lastJoinAttempt, setLastJoinAttempt] = useState(0);
+  const [joinStatus, setJoinStatus] = useState<'none' | 'joining' | 'joined' | 'failed'>('none');
+  const [joinError, setJoinError] = useState<string | null>(null);
+  const [joinMethod, setJoinMethod] = useState<'both' | 'chatOnly' | 'bookingOnly' | 'none'>('none');
+  const [joinResult, setJoinResult] = useState<{success: boolean, error?: string} | null>(null);
+  const [joinDuration, setJoinDuration] = useState(0);
+  const [joinStartTime, setJoinStartTime] = useState(0);
+  const [joinEndTime, setJoinEndTime] = useState(0);
+  const [isJoining, setIsJoining] = useState(false);
+  const [hasTriedBothIds, setHasTriedBothIds] = useState(false);
+  const [hasTriedChatIdOnly, setHasTriedChatIdOnly] = useState(false);
+  const [hasTriedBookingIdOnly, setHasTriedBookingIdOnly] = useState(false);
+  const [joinRetryCount, setJoinRetryCount] = useState(0);
+  const [joinRetryDelay, setJoinRetryDelay] = useState(2000);
+  const [joinRetryTimeout, setJoinRetryTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isRetryingJoin, setIsRetryingJoin] = useState(false);
+  const [retryJoinMethod, setRetryJoinMethod] = useState<'both' | 'chatOnly' | 'bookingOnly' | 'none'>('none');
+  const [retryJoinResult, setRetryJoinResult] = useState<{success: boolean, error?: string} | null>(null);
+  const [retryJoinDuration, setRetryJoinDuration] = useState(0);
+  const [retryJoinStartTime, setRetryJoinStartTime] = useState(0);
+  const [retryJoinEndTime, setRetryJoinEndTime] = useState(0);
+  const [isRetryJoining, setIsRetryJoining] = useState(false);
+  const [hasTriedRetryBothIds, setHasTriedRetryBothIds] = useState(false);
+  const [hasTriedRetryChatIdOnly, setHasTriedRetryChatIdOnly] = useState(false);
+  const [hasTriedRetryBookingIdOnly, setHasTriedRetryBookingIdOnly] = useState(false);
+  const [retryJoinRetryCount, setRetryJoinRetryCount] = useState(0);
+  const [retryJoinRetryDelay, setRetryJoinRetryDelay] = useState(2000);
+  const [retryJoinRetryTimeout, setRetryJoinRetryTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isRetryingRetryJoin, setIsRetryingRetryJoin] = useState(false);
+  const [retryRetryJoinMethod, setRetryRetryJoinMethod] = useState<'both' | 'chatOnly' | 'bookingOnly' | 'none'>('none');
+  const [retryRetryJoinResult, setRetryRetryJoinResult] = useState<{success: boolean, error?: string} | null>(null);
+  const [retryRetryJoinDuration, setRetryRetryJoinDuration] = useState(0);
+  const [retryRetryJoinStartTime, setRetryRetryJoinStartTime] = useState(0);
+  const [retryRetryJoinEndTime, setRetryRetryJoinEndTime] = useState(0);
+  const [isRetryRetryJoining, setIsRetryRetryJoining] = useState(false);
+  const [hasTriedRetryRetryBothIds, setHasTriedRetryRetryBothIds] = useState(false);
+  const [hasTriedRetryRetryChatIdOnly, setHasTriedRetryRetryChatIdOnly] = useState(false);
+  const [hasTriedRetryRetryBookingIdOnly, setHasTriedRetryRetryBookingIdOnly] = useState(false);
+  const [retryRetryJoinRetryCount, setRetryRetryJoinRetryCount] = useState(0);
+  const [retryRetryJoinRetryDelay, setRetryRetryJoinRetryDelay] = useState(2000);
+  const [retryRetryJoinRetryTimeout, setRetryRetryJoinRetryTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isRetryingRetryRetryJoin, setIsRetryingRetryRetryJoin] = useState(false);
+  const [retryRetryRetryJoinMethod, setRetryRetryRetryJoinMethod] = useState<'both' | 'chatOnly' | 'bookingOnly' | 'none'>('none');
+  const [retryRetryRetryJoinResult, setRetryRetryRetryJoinResult] = useState<{success: boolean, error?: string} | null>(null);
+  const [retryRetryRetryJoinDuration, setRetryRetryRetryJoinDuration] = useState(0);
+  const [retryRetryRetryJoinStartTime, setRetryRetryRetryJoinStartTime] = useState(0);
+  const [retryRetryRetryJoinEndTime, setRetryRetryRetryJoinEndTime] = useState(0);
+  const [isRetryRetryRetryJoining, setIsRetryRetryRetryJoining] = useState(false);
+  const [hasTriedRetryRetryRetryBothIds, setHasTriedRetryRetryRetryBothIds] = useState(false);
+  const [hasTriedRetryRetryRetryChatIdOnly, setHasTriedRetryRetryRetryChatIdOnly] = useState(false);
+  const [hasTriedRetryRetryRetryBookingIdOnly, setHasTriedRetryRetryRetryBookingIdOnly] = useState(false);
+  const [retryRetryRetryJoinRetryCount, setRetryRetryRetryJoinRetryCount] = useState(0);
+  const [retryRetryRetryJoinRetryDelay, setRetryRetryRetryJoinRetryDelay] = useState(2000);
+  const [retryRetryRetryJoinRetryTimeout, setRetryRetryRetryJoinRetryTimeout] = useState<NodeJS.Timeout | null>(null);
+  const [isRetryingRetryRetryRetryJoin, setIsRetryingRetryRetryRetryJoin] = useState(false);
+  const [retryRetryRetryRetryJoinMethod, setRetryRetryRetryRetryJoinMethod] = useState<'both' | 'chatOnly' | 'bookingOnly' | 'none'>('none');
+  const [retryRetryRetryRetryJoinResult, setRetryRetryRetryRetryJoinResult] = useState<{success: boolean, error?: string} | null>(null);
+  const [retryRetryRetryRetryJoinDuration, setRetryRetryRetryRetryJoinDuration] = useState(0);
+  const [retryRetryRetryRetryJoinStartTime, setRetryRetryRetryRetryJoinStartTime] = useState(0);
+  const [retryRetryRetryRetryJoinEndTime, setRetryRetryRetryRetryJoinEndTime] = useState(0);
 
-  const renderMessage = ({ item: msg }: { item: Message }) => {
-    // Safely handle undefined values
-    if (!msg) return null;
-    
-    const isAstrologer = msg.senderType === 'astrologer';
-    const isSystem = msg.senderType === 'system';
-    
-    // Safely handle timestamp - ensure it's a valid Date object
-    let timestamp: Date;
+  // Initialize chat function
+  const initializeChat = async () => {
     try {
-      if (msg.timestamp instanceof Date) {
-        timestamp = msg.timestamp;
-      } else if (typeof msg.timestamp === 'number') {
-        timestamp = new Date(msg.timestamp);
-      } else if (typeof msg.timestamp === 'string') {
-        timestamp = new Date(msg.timestamp);
-      } else {
-        timestamp = new Date();
+      setLoading(true);
+      setError(null);
+      setIsInitialLoad(true);
+      
+      // Check if we have a valid chat ID or booking ID
+      if (!chatId && !bookingId) {
+        setError('No chat ID or booking ID provided');
+        setLoading(false);
+        setIsInitialLoad(false);
+        return;
       }
-    } catch (e) {
-      timestamp = new Date();
+      
+      console.log(`Initializing chat with chatId: ${chatId}, bookingId: ${bookingId}`);
+      
+      // Try to fetch existing chat
+      let chatResponse;
+      try {
+        if (chatId) {
+          console.log('Fetching chat by chat ID:', chatId);
+          chatResponse = await chatService.chatService.getChatById(chatId);
+        } else if (bookingId) {
+          console.log('Fetching chat by booking ID:', bookingId);
+          chatResponse = await chatService.chatService.getChatByBookingId(bookingId);
+        }
+        
+        console.log('Chat response:', chatResponse);
+      } catch (fetchError) {
+        console.error('Error fetching chat:', fetchError);
+        chatResponse = null;
+      }
+      
+      // If we couldn't get an existing chat and we have a booking ID, create a new one
+      if (!chatResponse && bookingId) {
+        try {
+          console.log('Creating new chat with booking ID:', bookingId);
+          chatResponse = await chatService.chatService.createOrGetChat(bookingId);
+          console.log('New chat created:', chatResponse);
+        } catch (createError) {
+          console.error('Error creating new chat:', createError);
+          setError(`Failed to create chat: ${createError instanceof Error ? createError.message : String(createError)}`);
+          setLoading(false);
+          setIsInitialLoad(false);
+          return;
+        }
+      }
+      
+      // If we still don't have a chat response, show error
+      if (!chatResponse) {
+        setError('Failed to fetch or create chat');
+        setLoading(false);
+        setIsInitialLoad(false);
+        return;
+      }
+      
+      // Extract chat ID from response
+      const extractedChatId = extractChatId(chatResponse);
+      console.log('Extracted chat ID:', extractedChatId);
+      
+      if (!extractedChatId) {
+        setError('Could not extract chat ID from response');
+        setLoading(false);
+        setIsInitialLoad(false);
+        return;
+      }
+      
+      // Set chat and booking IDs
+      setCurrentChatId(extractedChatId);
+      
+      // Set booking ID if available
+      if (bookingId) {
+        setCurrentBookingId(bookingId);
+      } else if (chatResponse.data?.booking?._id) {
+        const bookingIdFromResponse = chatResponse.data.booking._id;
+        setCurrentBookingId(bookingIdFromResponse);
+      }
+      
+      // Extract chat data and set messages
+      const chatData = chatResponse.data || chatResponse;
+      setChatData(chatData);
+      setMessages(chatData.messages || []);
+      
+      // Mark messages as read
+      try {
+        await chatService.chatService.markMessagesAsRead(extractedChatId, bookingId || '');
+      } catch (markReadError) {
+        console.error('Error marking messages as read:', markReadError);
+      }
+      
+      // Connect to socket and join room
+      try {
+        console.log('Connecting to socket...');
+        setIsConnecting(true);
+        setSocketConnectionStatus('connecting');
+        
+        const socketInstance = await socketService.connectSocket();
+        setSocketInstance(socketInstance);
+        
+        if (!socketInstance || !socketInstance.connected) {
+          console.warn('Socket connection failed on first attempt, retrying...');
+          await new Promise(resolve => setTimeout(resolve, 1000));
+          const retrySocketInstance = await socketService.connectSocket();
+          setSocketInstance(retrySocketInstance);
+        }
+        
+        setIsConnected(!!socketInstance?.connected);
+        setSocketConnectionStatus(socketInstance?.connected ? 'connected' : 'disconnected');
+        setIsSocketReady(true);
+        
+        // Try to join the room
+        console.log('Attempting to join room...');
+        tryJoinRoom();
+      } catch (socketError) {
+        console.error('Socket connection error:', socketError);
+        setError(`Socket connection error: ${socketError instanceof Error ? socketError.message : String(socketError)}`);
+        setIsConnecting(false);
+        setSocketConnectionStatus('disconnected');
+        
+        // Start background retries for room joining
+        if (extractedChatId) {
+          performBackgroundRetries(extractedChatId, bookingId || '');
+        }
+      }
+      
+      // Finish loading
+      setLoading(false);
+      setIsInitialLoad(false);
+    } catch (error) {
+      console.error('Error in initializeChat:', error);
+      setError(`Error initializing chat: ${error instanceof Error ? error.message : String(error)}`);
+      setLoading(false);
+      setIsInitialLoad(false);
     }
-    
-    return (
-      <View style={[
-        styles.messageContainer,
-        isAstrologer ? styles.astrologerMessage : styles.userMessage,
-        isSystem && styles.systemMessage
-      ]}>
-        <Text style={[
-          styles.messageText,
-          isAstrologer ? styles.astrologerMessageText : styles.userMessageText,
-          isSystem && styles.systemMessageText
-        ]}>
-          {msg.message || ''}
-        </Text>
-        <View style={styles.messageFooter}>
-          <Text style={[
-            styles.timestamp,
-            isAstrologer ? styles.astrologerTimestamp : styles.userTimestamp
-          ]}>
-            {formatDistanceToNow(timestamp, { addSuffix: true })}
-          </Text>
-          {isAstrologer && (
-            <Ionicons 
-              name={msg.read ? "checkmark-done" : "checkmark"} 
-              size={16} 
-              color={isAstrologer ? "#8e8e8e" : "#ffffff"} 
-            />
-          )}
-        </View>
-      </View>
-    );
   };
 
-  useEffect(() => {
-    // Load chat data when component mounts
-    loadChat();
+  // Function to check if socket is in the room and update diagnostic info
+  const checkSocketRoomStatus = async () => {
+    const socket = socketService.getSocket();
+    if (!socket || !currentChatId) return false;
     
-    // Clean up socket on unmount
+    try {
+      const inRoom = await socketService.isSocketInRoom(currentChatId);
+      setHasJoinedRoom(inRoom);
+      
+      // Update diagnostic info
+      setDiagnosticInfo(prev => ({
+        ...prev,
+        inRoom,
+        lastRoomCheckTime: new Date().toLocaleTimeString()
+      }));
+      
+      return inRoom;
+    } catch (error) {
+      console.error('Error checking if socket is in room:', error);
+      setDiagnosticInfo(prev => ({
+        ...prev,
+        inRoom: false,
+        lastRoomCheckError: error instanceof Error ? error.message : String(error)
+      }));
+      return false;
+    }
+  };
+  
+  // Function to try joining a chat room
+  const tryJoinRoom = async () => {
+    try {
+      if (!currentChatId && !currentBookingId) {
+        console.log('Cannot join room: no chat ID or booking ID available');
+        return;
+      }
+      
+      // Update state to indicate we're joining
+      setIsJoining(true);
+      setJoinStatus('joining');
+      setJoinError(null);
+      
+      // Update diagnostic info
+      setDiagnosticInfo(prev => ({
+        ...prev,
+        joinAttemptTime: new Date().toLocaleTimeString(),
+        joinAttemptCount: (prev.joinAttemptCount || 0) + 1
+      }));
+      
+      // Try to join the room using the enhanced function
+      console.log(`Attempting to join room with chatId: ${currentChatId}, bookingId: ${currentBookingId}`);
+      setLastJoinAttempt(Date.now());
+      
+      // Update diagnostic info
+      setDiagnosticInfo(prev => ({
+        ...prev,
+        joinAttemptTime: new Date().toLocaleTimeString(),
+        joinMethod: currentChatId && currentBookingId ? 'both' : currentChatId ? 'chatOnly' : 'bookingOnly',
+        chatId: currentChatId,
+        bookingId: currentBookingId
+      }));
+      
+      // Call the enhanced join function with progress reporting
+      const result = await socketService.enhancedJoinChatRoom(currentChatId || '', currentBookingId || '', {
+        timeout: 10000,
+        retryCount: 3,
+        onProgress: (status) => {
+          console.log(`Join progress: ${status}`);
+          // Update diagnostic info
+          setDiagnosticInfo(prev => ({
+            ...prev,
+            joinProgressStatus: status,
+            joinProgressTime: new Date().toLocaleTimeString()
+          }));
+        }
+      });
+      
+      // Handle the result
+      if (result.success) {
+        setHasJoinedRoom(true);
+        setJoinStatus('joined');
+        setJoinError(null);
+        setIsJoining(false);
+        // Update diagnostic info
+        setDiagnosticInfo(prev => ({
+          ...prev,
+          joinSuccess: true,
+          joinSuccessTime: new Date().toLocaleTimeString(),
+          joinRoomId: currentChatId || ''
+        }));
+      } else {
+        setHasJoinedRoom(false);
+        setJoinStatus('failed');
+        setJoinError(result.error || 'Failed to join room');
+        setIsJoining(false);
+        // Update diagnostic info
+        setDiagnosticInfo(prev => ({
+          ...prev,
+          joinSuccess: false,
+          joinFailTime: new Date().toLocaleTimeString(),
+          joinFailError: result.error
+        }));
+      }
+    } catch (error) {
+      console.error('Error joining room:', error);
+      setHasJoinedRoom(false);
+      setJoinStatus('failed');
+      setJoinError(error instanceof Error ? error.message : String(error));
+      setIsJoining(false);
+      // Update diagnostic info
+      setDiagnosticInfo(prev => ({
+        ...prev,
+        joinSuccess: false,
+        joinFailTime: new Date().toLocaleTimeString(),
+        joinFailError: error instanceof Error ? error.message : String(error)
+      }));
+    }
+  };
+
+  // Periodic check for network and socket status
+  useEffect(() => {
+    // Only start checking if we have a chat ID or booking ID
+    if (!currentChatId && !currentBookingId) return;
+    
+    console.log('Setting up periodic status check...');
+    
+    const statusCheckInterval = setInterval(async () => {
+      // Update last status check time
+      setLastStatusCheck(Date.now());
+      
+      // Check network connectivity
+      const isNetworkConnected = await checkNetworkConnectivity();
+      setNetworkStatus(isNetworkConnected);
+      
+      // Update diagnostic info
+      setDiagnosticInfo(prev => ({
+        ...prev,
+        networkConnected: isNetworkConnected,
+        lastNetworkCheckTime: new Date().toLocaleTimeString()
+      }));
+      
+      // If network is connected, check socket room status
+      if (isNetworkConnected) {
+        const inRoom = await checkSocketRoomStatus();
+        
+        // If we're online but not in the room, try to join again
+        if (!inRoom && joinStatus !== 'joining') {
+          console.log('Network is online but not in room, attempting to join...');
+          tryJoinRoom();
+        }
+      }
+    }, 10000); // Check every 10 seconds
+    
     return () => {
-      // Don't disconnect the socket, just clean up listeners
-      if (socketService.isSocketConnected()) {
-        const socket = socketService.connectSocket().then(socket => {
-          if (socket) {
-            socket.off('chat:newMessage');
-            socket.off('chat:typing');
-            socket.off('chat:messagesRead');
-            socket.off('chat:error');
-          }
-        });
+      clearInterval(statusCheckInterval);
+    };
+  }, [currentChatId, currentBookingId, joinStatus]);
+
+  // Call initializeChat when the component mounts and set up socket listeners
+  useEffect(() => {
+    console.log('ChatScreen mounted, initializing chat...');
+    // Set the timestamp for the first connection attempt
+    setLastSocketConnectionAttempt(Date.now());
+    // Increment join attempts counter
+    setJoinAttempts(prev => prev + 1);
+    // Update connection status
+    setSocketConnectionStatus('connecting');
+    
+    console.log('Current route params:', route.params);
+    console.log('chatId:', chatId, 'bookingId:', bookingId);
+    console.log('Current loading state:', loading);
+    console.log('Current error state:', error);
+    
+    // Set IDs for use in the component
+    // Removed redundant state updates
+    
+    // Add a small delay before initializing to ensure all state is properly set
+    setTimeout(() => {
+      console.log('Starting chat initialization...');
+      initializeChat();
+    }, 500);
+    
+    // Set up socket connection status listeners
+    const socket = getSocket();
+    if (socket) {
+      console.log('Setting up socket event listeners');
+      
+      socket.on('connect', () => {
+        console.log('Socket connected event received');
+        setIsConnected(true);
+        setIsSocketReady(true);
+        setSocketConnectionStatus('connected');
+        // Update diagnostic info
+        setDiagnosticInfo(prev => ({
+          ...prev,
+          socketConnected: true,
+          lastConnectedTime: new Date().toLocaleTimeString()
+        }));
+        
+        // When connected, try to join the room if we have a chat ID
+        if (currentChatId || currentBookingId) {
+          tryJoinRoom();
+        }
+      });
+      
+      socket.on('disconnect', () => {
+        console.log('Socket disconnected event received');
+        setIsConnected(false);
+        setIsSocketReady(false);
+        setSocketConnectionStatus('disconnected');
+        setHasJoinedRoom(false);
+        // Update diagnostic info
+        setDiagnosticInfo(prev => ({
+          ...prev,
+          socketConnected: false,
+          lastDisconnectTime: new Date().toLocaleTimeString(),
+          disconnectCount: (prev.disconnectCount || 0) + 1
+        }));
+      });
+      
+      socket.on('connect_error', (error: Error) => {
+        console.error('Socket connection error:', error);
+        setIsConnected(false);
+        setIsSocketReady(false);
+        setSocketConnectionStatus('disconnected');
+        setError(`Socket connection error: ${error.message}`);
+        // Update diagnostic info
+        setDiagnosticInfo(prev => ({
+          ...prev,
+          socketConnected: false,
+          lastErrorTime: new Date().toLocaleTimeString(),
+          lastErrorMessage: error.message,
+          errorCount: (prev.errorCount || 0) + 1
+        }));
+      });
+      
+      // Listen for new messages
+      socket.on('new_message', (message: Message) => {
+        console.log('New message received:', message);
+        // Add the new message to our messages array
+        setMessages(prevMessages => [...prevMessages, message]);
+      });
+    }
+    
+    return () => {
+      // Clean up socket event listeners and other resources here
+      console.log('ChatScreen unmounted, cleaning up...');
+      if (socket) {
+        socket.off('connect');
+        socket.off('disconnect');
+        socket.off('connect_error');
+        socket.off('new_message');
       }
     };
-  }, [loadChat]);
+  }, [chatId, bookingId]); // Re-initialize if chatId or bookingId changes
+  
+  // Define styles for the component
+  const styles = StyleSheet.create({
+    container: {
+      flex: 1,
+      backgroundColor: '#f5f5f5',
+    },
+    header: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      padding: 10,
+      borderBottomWidth: 1,
+      borderBottomColor: '#ddd',
+      backgroundColor: '#fff',
+    },
+    backButton: {
+      padding: 10,
+    },
+    headerTitle: {
+      fontSize: 18,
+      fontWeight: 'bold',
+      marginLeft: 10,
+    },
+    loadingContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    errorContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: 20,
+    },
+    errorText: {
+      color: 'red',
+      marginBottom: 10,
+      textAlign: 'center',
+    },
+    retryButton: {
+      padding: 10,
+      backgroundColor: '#ddd',
+      borderRadius: 5,
+    },
+    emptyContainer: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    messageContainer: {
+      padding: 10,
+      marginVertical: 5,
+      marginHorizontal: 10,
+      borderRadius: 10,
+      maxWidth: '80%',
+    },
+    sentMessage: {
+      alignSelf: 'flex-end',
+      backgroundColor: '#dcf8c6',
+    },
+    receivedMessage: {
+      alignSelf: 'flex-start',
+      backgroundColor: '#fff',
+    },
+    messageText: {
+      fontSize: 16,
+    },
+    timestamp: {
+      fontSize: 12,
+      color: '#999',
+      alignSelf: 'flex-end',
+      marginTop: 5,
+    },
+    inputContainer: {
+      flexDirection: 'row',
+      padding: 10,
+      borderTopWidth: 1,
+      borderTopColor: '#ddd',
+      backgroundColor: '#f5f5f5',
+      alignItems: 'center',
+    },
+    input: {
+      flex: 1,
+      padding: 12,
+      paddingHorizontal: 15,
+      borderWidth: 1,
+      borderColor: '#ddd',
+      borderRadius: 20,
+      marginRight: 10,
+      backgroundColor: '#fff',
+      fontSize: 16,
+    },
+    sendButton: {
+      justifyContent: 'center',
+      alignItems: 'center',
+      backgroundColor: '#0084ff',
+      width: 60,
+      height: 44,
+      borderRadius: 22,
+      elevation: 2,
+      shadowColor: '#000',
+      shadowOffset: { width: 0, height: 1 },
+      shadowOpacity: 0.2,
+      shadowRadius: 1.5,
+    },
+    sendButtonText: {
+      color: '#fff',
+      fontWeight: 'bold',
+      fontSize: 15,
+    },
+  });
 
-  // Auto-scroll to bottom when messages change
-  useEffect(() => {
-    setTimeout(() => {
-      flatListRef.current?.scrollToEnd({ animated: false });
-    }, 100);
-  }, [messages]);
+  // Debug render function to help diagnose the blank screen issue
+  console.log('Rendering ChatScreen with state:', {
+    loading,
+    error,
+    chatData,
+    messages: messages.length,
+    currentChatId,
+    currentBookingId,
+    hasJoinedRoom
+  });
 
-  if (loading) {
-    return (
-      <View style={styles.loadingContainer}>
-        <ActivityIndicator size="large" color="#7854F7" />
-        <Text style={styles.loadingText}>Loading chat...</Text>
-      </View>
-    );
-  }
-
-  if (error) {
-    return (
-      <View style={styles.errorContainer}>
-        <Ionicons name="alert-circle-outline" size={48} color="#FF6B6B" />
-        <Text style={styles.errorText}>{error}</Text>
-        <TouchableOpacity style={styles.retryButton} onPress={loadChat}>
-          <Text style={styles.retryButtonText}>Retry</Text>
-        </TouchableOpacity>
-      </View>
-    );
-  }
-
+  // Render the chat screen
   return (
-    <KeyboardAvoidingView
-      behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
-      style={styles.container}
-    >
+    <SafeAreaView style={styles.container}>
+      <StatusBar barStyle="dark-content" />
+      
+      {/* Header */}
       <View style={styles.header}>
         <TouchableOpacity onPress={() => navigation.goBack()} style={styles.backButton}>
-          <Ionicons name="arrow-back" size={24} color="#333" />
+          <Text>Back</Text>
         </TouchableOpacity>
-        <View style={styles.headerInfo}>
-          <Text style={styles.headerTitle}>{chatData?.user?.name || 'Chat'}</Text>
-          <Text style={styles.headerSubtitle}>
-            {userTyping ? 'typing...' : (isConnected ? 'online' : 'offline')}
-          </Text>
-        </View>
+        <Text style={styles.headerTitle}>
+          {chatData?.user?.name || 'Chat'}
+        </Text>
       </View>
 
-      {/* Connection Status */}
-      {isConnecting && (
-        <View style={styles.connectionStatus}>
-          <Text style={styles.connectionStatusText}>Connecting to chat...</Text>
+      {/* Loading indicator */}
+      {loading && (
+        <View style={styles.loadingContainer}>
+          <ActivityIndicator size="large" color="#0000ff" />
+          <Text>Loading chat...</Text>
         </View>
       )}
 
-      {!isConnected && !isConnecting && (
-        <TouchableOpacity style={styles.connectionError} onPress={connectToSocket}>
-          <Text style={styles.connectionErrorText}>
-            Disconnected from chat. Tap to reconnect.
-          </Text>
-        </TouchableOpacity>
-      )}
-
-      <FlatList
-        ref={flatListRef}
-        data={messages}
-        renderItem={renderMessage}
-        keyExtractor={(item) => {
-          // Handle case where _id might be undefined or null
-          if (!item || !item._id) {
-            // Use temporaryId if available, otherwise use a timestamp-based fallback
-            if (item.temporaryId) {
-              return item.temporaryId;
-            }
-            
-            // Create a fallback ID using timestamp if available
-            let timestampValue = Date.now();
-            if (item.timestamp) {
-              if (item.timestamp instanceof Date) {
-                timestampValue = item.timestamp.getTime();
-              } else if (typeof item.timestamp === 'number') {
-                timestampValue = item.timestamp;
-              }
-            }
-            
-            return `msg_${timestampValue}_${Math.random().toString(36).substring(2, 9)}`;
-          }
-          return item._id.toString();
-        }}
-        contentContainerStyle={styles.messagesList}
-        ListEmptyComponent={
-          <View style={styles.emptyContainer}>
-            <Text style={styles.emptyText}>No messages yet</Text>
-          </View>
-        }
-        onContentSizeChange={() => flatListRef.current?.scrollToEnd({ animated: false })}
-      />
-
-      {userTyping && (
-        <View style={[styles.messageContainer, styles.userMessage, styles.typingIndicator]}>
-          <View style={styles.typingDots}>
-            <View style={styles.typingDot} />
-            <View style={[styles.typingDot, styles.typingDotMiddle]} />
-            <View style={styles.typingDot} />
-          </View>
+      {/* Error message */}
+      {error && (
+        <View style={styles.errorContainer}>
+          <Text style={styles.errorText}>{error}</Text>
+          <TouchableOpacity onPress={initializeChat} style={styles.retryButton}>
+            <Text>Retry</Text>
+          </TouchableOpacity>
         </View>
       )}
 
-      <View style={styles.inputContainer}>
-        <TextInput
-          style={styles.input}
-          placeholder="Type a message..."
-          value={message}
-          onChangeText={(text) => {
-            setMessage(text);
-            handleTyping();
-          }}
-          multiline
-        />
-        <TouchableOpacity
-          style={[
-            styles.sendButton,
-            (!message.trim() || sending) && styles.sendButtonDisabled
-          ]}
-          onPress={() => handleSendMessage(message)}
-          disabled={!message.trim() || sending || !isConnected}
-        >
-          {sending ? (
-            <ActivityIndicator size="small" color="#fff" />
-          ) : (
-            <Ionicons name="send" size={20} color="#fff" />
+      {/* Chat messages */}
+      {!loading && !error && messages.length > 0 && (
+        <FlatList
+          data={messages}
+          keyExtractor={(item) => item._id || item.temporaryId || String(item.timestamp)}
+          renderItem={({ item }) => (
+            <View style={[styles.messageContainer, 
+              item.senderType === 'astrologer' ? styles.sentMessage : styles.receivedMessage
+            ]}>
+              <Text style={styles.messageText}>{item.content}</Text>
+              <Text style={styles.timestamp}>
+                {new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </Text>
+            </View>
           )}
+          inverted
+        />
+      )}
+
+      {/* Empty state */}
+      {!loading && !error && messages.length === 0 && (
+        <View style={styles.emptyContainer}>
+          <Text>No messages yet. Start the conversation!</Text>
+        </View>
+      )}
+
+      {/* Message input */}
+      <KeyboardAvoidingView
+        behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+        keyboardVerticalOffset={Platform.OS === 'ios' ? 90 : 0}
+        style={styles.inputContainer}
+      >
+        <TextInput
+          placeholder="Type a message..."
+          style={styles.input}
+          value={message}
+          onChangeText={setMessage}
+          onSubmitEditing={handleSendMessage}
+          returnKeyType="send"
+          blurOnSubmit={false}
+          multiline={false}
+          autoFocus={false}
+          autoCorrect={true}
+          autoCapitalize="sentences"
+        />
+        <TouchableOpacity 
+          style={styles.sendButton}
+          onPress={handleSendMessage}
+          disabled={!message.trim() || sending}
+        >
+          <Text style={styles.sendButtonText}>{sending ? 'Sending...' : 'Send'}</Text>
+        </TouchableOpacity>
+      </KeyboardAvoidingView>
+
+      {/* Debug info */}
+      <View style={{ position: 'absolute', bottom: 100, right: 10, backgroundColor: 'rgba(0,0,0,0.7)', padding: 10, borderRadius: 5, display: showDiagnostics ? 'flex' : 'none' }}>
+        <Text style={{ color: 'white', fontSize: 10, fontWeight: 'bold' }}>CHAT DIAGNOSTICS</Text>
+        <Text style={{ color: 'white', fontSize: 10 }}>
+          Chat ID: <Text style={{color: currentChatId ? '#90EE90' : '#FF6347'}}>{currentChatId || 'None'}</Text>{"\n"}
+          Booking ID: <Text style={{color: currentBookingId ? '#90EE90' : '#FF6347'}}>{currentBookingId || 'None'}</Text>{"\n"}
+          Joined Room: <Text style={{color: hasJoinedRoom ? '#90EE90' : '#FF6347'}}>{hasJoinedRoom ? 'Yes' : 'No'}</Text>{"\n"}
+          Socket Ready: <Text style={{color: isSocketReady ? '#90EE90' : '#FF6347'}}>{isSocketReady ? 'Yes' : 'No'}</Text>{"\n"}
+          Socket Connected: <Text style={{color: isConnected ? '#90EE90' : '#FF6347'}}>{isConnected ? 'Yes' : 'No'}</Text>{"\n"}
+          Connecting: <Text style={{color: isConnecting ? '#FFA500' : '#90EE90'}}>{isConnecting ? 'Yes' : 'No'}</Text>{"\n"}
+          Network Status: <Text style={{color: networkStatus ? '#90EE90' : '#FF6347'}}>{networkStatus ? 'Online' : 'Offline'}</Text>{"\n"}
+          Messages: <Text style={{color: messages.length > 0 ? '#90EE90' : '#FFA500'}}>{messages.length}</Text>{"\n"}
+          Join Attempts: <Text style={{color: joinAttempts > 3 ? '#FF6347' : '#90EE90'}}>{joinAttempts}</Text>{"\n"}
+          Last Attempt: <Text style={{color: '#FFA500'}}>{lastSocketConnectionAttempt ? new Date(lastSocketConnectionAttempt).toLocaleTimeString() : 'None'}</Text>{"\n"}
+          Socket Status: <Text style={{color: socketConnectionStatus === 'connected' ? '#90EE90' : (socketConnectionStatus === 'connecting' ? '#FFA500' : '#FF6347')}}>{socketConnectionStatus}</Text>{"\n"}
+          Last Error: <Text style={{color: error ? '#FF6347' : '#90EE90'}}>{error || 'None'}</Text>
+        </Text>
+        
+        {/* Additional diagnostic info */}
+        <View style={{marginTop: 10, borderTopWidth: 1, borderTopColor: '#555', paddingTop: 5}}>
+          <Text style={{ color: 'white', fontSize: 9, fontWeight: 'bold' }}>DETAILED DIAGNOSTICS:</Text>
+          <Text style={{ color: '#AAA', fontSize: 9 }}>
+            Last Connected: {diagnosticInfo.lastConnectedTime || 'Never'}{"\n"}
+            Last Disconnected: {diagnosticInfo.lastDisconnectTime || 'Never'}{"\n"}
+            Disconnect Count: {diagnosticInfo.disconnectCount || 0}{"\n"}
+            Error Count: {diagnosticInfo.errorCount || 0}{"\n"}
+            Last Error: {diagnosticInfo.lastErrorMessage || 'None'}
+          </Text>
+        </View>
+        <TouchableOpacity 
+          style={{marginTop: 10, backgroundColor: '#4169E1', padding: 5, borderRadius: 3}}
+          onPress={() => {
+            // Force reconnect and rejoin
+            console.log('Manual reconnect triggered from debug panel');
+            socketService.connectSocket().then(() => {
+              performBackgroundRetries(currentChatId || '', currentBookingId || '');
+            });
+          }}
+        >
+          <Text style={{color: 'white', fontSize: 10, textAlign: 'center'}}>Force Reconnect</Text>
         </TouchableOpacity>
       </View>
-    </KeyboardAvoidingView>
+      
+      {/* Debug toggle button */}
+      <TouchableOpacity 
+        style={{ 
+          position: 'absolute', 
+          bottom: 70, 
+          right: 10, 
+          backgroundColor: showDiagnostics ? '#4169E1' : '#333', 
+          padding: 8, 
+          borderRadius: 5,
+          borderWidth: 1,
+          borderColor: 'white'
+        }}
+        onPress={() => setShowDiagnostics(!showDiagnostics)}
+      >
+        <Text style={{ color: 'white', fontSize: 12, fontWeight: 'bold' }}>
+          {showDiagnostics ? 'Hide Debug' : 'Show Debug'}
+        </Text>
+      </TouchableOpacity>
+    </SafeAreaView>
   );
-};
+}
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    backgroundColor: '#F5F5F5',
-  },
-  header: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    padding: 16,
-    backgroundColor: '#fff',
-    borderBottomWidth: 1,
-    borderBottomColor: '#E5E5E5',
-  },
-  backButton: {
-    padding: 8,
-  },
-  headerInfo: {
-    marginLeft: 16,
-    flex: 1,
-  },
-  headerTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#333',
-  },
-  headerSubtitle: {
-    fontSize: 14,
-    color: '#666',
-  },
-  connectionStatus: {
-    backgroundColor: '#FFEDBA',
-    padding: 8,
-    alignItems: 'center',
-  },
-  connectionStatusText: {
-    color: '#8B6800',
-    fontSize: 14,
-  },
-  connectionError: {
-    backgroundColor: '#FFBABA',
-    padding: 8,
-    alignItems: 'center',
-  },
-  connectionErrorText: {
-    color: '#D8000C',
-    fontSize: 14,
-  },
-  loadingContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F5',
-  },
-  loadingText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#666',
-  },
-  errorContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    backgroundColor: '#F5F5F5',
-    padding: 20,
-  },
-  errorText: {
-    marginTop: 16,
-    fontSize: 16,
-    color: '#666',
-    textAlign: 'center',
-  },
-  retryButton: {
-    marginTop: 16,
-    paddingVertical: 8,
-    paddingHorizontal: 16,
-    backgroundColor: '#7854F7',
-    borderRadius: 4,
-  },
-  retryButtonText: {
-    color: '#fff',
-    fontSize: 16,
-  },
-  messagesList: {
-    padding: 16,
-  },
-  messageContainer: {
-    maxWidth: '80%',
-    padding: 12,
-    borderRadius: 8,
-    marginBottom: 8,
-  },
-  userMessage: {
-    alignSelf: 'flex-start',
-    backgroundColor: '#fff',
-    borderBottomLeftRadius: 0,
-  },
-  astrologerMessage: {
-    alignSelf: 'flex-end',
-    backgroundColor: '#7854F7',
-    borderBottomRightRadius: 0,
-  },
-  systemMessage: {
-    alignSelf: 'center',
-    backgroundColor: '#E5E5E5',
-    maxWidth: '90%',
-  },
-  messageText: {
-    fontSize: 16,
-  },
-  userMessageText: {
-    color: '#333',
-  },
-  astrologerMessageText: {
-    color: '#fff',
-  },
-  systemMessageText: {
-    color: '#666',
-    fontStyle: 'italic',
-  },
-  messageFooter: {
-    flexDirection: 'row',
-    justifyContent: 'flex-end',
-    alignItems: 'center',
-    marginTop: 4,
-  },
-  timestamp: {
-    fontSize: 12,
-    marginRight: 4,
-  },
-  userTimestamp: {
-    color: '#999',
-  },
-  astrologerTimestamp: {
-    color: '#E0CFFF',
-  },
-  typingIndicator: {
-    padding: 8,
-    maxWidth: '40%',
-  },
-  typingDots: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: 20,
-  },
-  typingDot: {
-    width: 6,
-    height: 6,
-    borderRadius: 3,
-    backgroundColor: '#666',
-    marginHorizontal: 2,
-  },
-  typingDotMiddle: {
-    marginTop: -5,
-  },
-  emptyContainer: {
-    flex: 1,
-    justifyContent: 'center',
-    alignItems: 'center',
-    padding: 20,
-  },
-  emptyText: {
-    fontSize: 16,
-    color: '#999',
-    textAlign: 'center',
-  },
-  inputContainer: {
-    flexDirection: 'row',
-    padding: 8,
-    backgroundColor: '#fff',
-    borderTopWidth: 1,
-    borderTopColor: '#E5E5E5',
-  },
-  input: {
-    flex: 1,
-    backgroundColor: '#F5F5F5',
-    borderRadius: 20,
-    padding: 12,
-    paddingTop: 12,
-    maxHeight: 100,
-    fontSize: 16,
-  },
-  sendButton: {
-    width: 40,
-    height: 40,
-    borderRadius: 20,
-    backgroundColor: '#7854F7',
-    justifyContent: 'center',
-    alignItems: 'center',
-    marginLeft: 8,
-    alignSelf: 'flex-end',
-  },
-  sendButtonDisabled: {
-    backgroundColor: '#BBBBBB',
-  },
-});
-
-export default ChatScreen; 
+export default ChatScreen;
